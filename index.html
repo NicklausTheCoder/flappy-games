@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Flappy Bird - Mobile</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        
+        body {
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            min-height: 100dvh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+        }
+        
+        #game-container {
+            width: 100%;
+            height: 100vh;
+            height: 100dvh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+        
+        canvas {
+            width: 100%;
+            height: auto;
+            max-height: 100vh;
+            max-height: 100dvh;
+            object-fit: contain;
+            touch-action: none;
+            border-radius: 12px; /* Optional: rounded corners */
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        
+        /* Optional: Add a simple instruction overlay */
+        .instructions {
+            position: fixed;
+            bottom: 10px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            color: rgba(255,255,255,0.5);
+            font-size: 12px;
+            pointer-events: none;
+            padding: 10px;
+            z-index: 10;
+        }
+        
+        @media (orientation: landscape) {
+            /* Landscape mode adjustments */
+            canvas {
+                max-height: 90vh;
+            }
+            
+            .instructions {
+                bottom: 5px;
+                font-size: 10px;
+            }
+        }
+        
+        /* Loading screen optimization */
+        .loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #0a0a2a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 24px;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container"></div>
+ 
+    <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
