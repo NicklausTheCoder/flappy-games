@@ -1,9 +1,26 @@
 import { defineConfig } from 'vite';
-// import your plugins (react, etc.)
 
-// vite.config.js
 export default defineConfig({
   server: {
-    allowedHosts: true, // allows ANY host - USE WITH CAUTION
+    host: '0.0.0.0',
+    allowedHosts: [
+      'flappy-games.onrender.com',
+      '.onrender.com',  // This allows ALL subdomains of onrender.com
+      'localhost',
+      '.localhost'
+    ],
+    port: 10000,
+    strictPort: true,
+  },
+  preview: {
+    host: '0.0.0.0',
+    allowedHosts: [
+      'flappy-games.onrender.com',
+      '.onrender.com',
+      'localhost',
+      '.localhost'
+    ],
+    port: 10000,
+    strictPort: true,
   }
 });
