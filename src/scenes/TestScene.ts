@@ -1,728 +1,506 @@
+// src/scenes/ball-crush/BallCrushGameScene.ts
 import Phaser from 'phaser';
-import { 
-  firebaseQueries, 
-  CompleteUser,
-  LeaderboardEntry,
-  SearchResult,
-  Transaction
-} from '../firebase/firebase.queries';
 
-export class TestScene extends Phaser.Scene {
+export class BallCrushGameScene extends Phaser.Scene {
+  private username: string = '';
+
+  // Game objects
+  private player!: Phaser.GameObjects.Image;
+  private ball!: Phaser.GameObjects.Image;
+  private opponent!: Phaser.GameObjects.Image;  // ← Add this
   // UI Elements
-  private titleText!: Phaser.GameObjects.Text;
-  private statusText!: Phaser.GameObjects.Text;
-  private resultsContainer!: Phaser.GameObjects.Container;
-  private resultsText: Phaser.GameObjects.Text[] = [];
-  private loadingIndicator!: Phaser.GameObjects.Text;
-  
-  // Buttons
-  private buttons: Phaser.GameObjects.Text[] = [];
-  private backButton!: Phaser.GameObjects.Text;
-  private categoryButtons: Phaser.GameObjects.Text[] = [];
-  
-  // Current data
-  private currentUser: CompleteUser | null = null;
-  private currentCategory: string = 'users';
-  
+  private scoreText!: Phaser.GameObjects.Text;
+  private score: number = 0;
+
+  // Game state
+  private gameActive: boolean = true;
+  private ballSpeed: number = 200;
+  private ballDirection: Phaser.Math.Vector2;
+  private playerHealth: number = 5;        // ← Change from health
+  private opponentHealth: number = 5;      // ← Add this
+  private playerHealthBars: Phaser.GameObjects.Image[] = [];    // ← Change name
+  private opponentHealthBars: Phaser.GameObjects.Image[] = [];  // ← Add this
+  private opponentSpeed: number = 3;  // ← Add this (slightly slower than player)
+  private speedMultiplier: number = 1.0;  // ← Add this
+  private lastSpeedIncrease: number = 0;   // ← Add this
+  private speedIncreaseInterval: number = 30000; // 30 seconds in milliseconds ← Add this
+  // Controls
+  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
+  private moveSpeed: number = 5;
+
   constructor() {
-    super({ key: 'TestScene' });
+    super({ key: 'BallCrushGameScene' });
+    this.ballDirection = new Phaser.Math.Vector2(1, 1).normalize();
   }
-  
+
+  init(data: { username: string }) {
+    this.username = data.username || 'Player';
+    console.log('⚽ BallCrushGameScene started for:', this.username);
+  }
+
   create() {
-    console.log('🧪 TestScene created');
-    
-    // Set background
-    this.cameras.main.setBackgroundColor('#1a1a2e');
-    
-    // Add title
-    this.addTitle();
-    
-    // Add category selector
-    this.createCategorySelector();
-    
-    // Add status display
-    this.createStatusDisplay();
-    
-    // Create test buttons
-    this.createTestButtons();
-    
-    // Create results container
-    this.createResultsContainer();
-    
-    // Add back button
-    this.createBackButton();
-    
-    // Add instructions
-    this.addInstructions();
-    
-    // Set default category
-    this.selectCategory('users');
-  }
-  
-  private addTitle() {
-    this.titleText = this.add.text(400, 40, '🔥 FIREBASE QUERY TESTER', {
-      fontSize: '32px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4,
-      shadow: { offsetX: 2, offsetY: 2, color: '#000000', blur: 2, fill: true }
-    }).setOrigin(0.5);
-  }
-  
-  private createCategorySelector() {
-    const categories = [
-      { text: '👤 USERS', y: 80, color: '#4CAF50', category: 'users' },
-      { text: '🏆 LEADERBOARD', y: 80, color: '#FF9800', category: 'leaderboard' },
-      { text: '💰 WALLET', y: 80, color: '#2196F3', category: 'wallet' },
-      { text: '📊 STATS', y: 80, color: '#9C27B0', category: 'stats' }
-    ];
-    
-    categories.forEach((cat, index) => {
-      const button = this.add.text(150 + (index * 130), cat.y, cat.text, {
-        fontSize: '16px',
-        color: '#ffffff',
-        backgroundColor: cat.color,
-        padding: { x: 8, y: 4 }
-      })
-      .setInteractive({ useHandCursor: true })
-      .setVisible(false); // Hidden initially
-      
-      button.on('pointerdown', () => this.selectCategory(cat.category));
-      
-      this.categoryButtons.push(button);
-    });
-  }
-  
-  private createStatusDisplay() {
-    // Status background
-    const statusBg = this.add.graphics();
-    statusBg.fillStyle(0x16213e, 0.8);
-    statusBg.fillRoundedRect(20, 110, 760, 60, 10);
-    
-    // Status text
-    this.statusText = this.add.text(40, 130, '⏳ Ready to test queries...', {
-      fontSize: '18px',
-      color: '#ffff00'
-    });
-    
-    // Loading indicator
-    this.loadingIndicator = this.add.text(700, 130, '🔄', {
-      fontSize: '24px',
-      color: '#00ff00'
-    });
-    this.loadingIndicator.setVisible(false);
-  }
-  
-  private createTestButtons() {
-    const buttonStyle = {
-      fontSize: '16px',
-      color: '#ffffff',
-      backgroundColor: '#0f3460',
-      padding: { x: 8, y: 6 },
-      stroke: '#4a4a4a',
-      strokeThickness: 2
-    };
-    
-    const buttonHoverStyle = {
-      color: '#ffff00',
-      backgroundColor: '#1a4a8a'
-    };
-    
-    // User category buttons
-    const userTests = [
-      { text: '👤 Get "nicklaus"', y: 190, action: () => this.testGetUser('nicklaus') },
-      { text: '📧 Get by Email', y: 240, action: () => this.testGetUserByEmail() },
-      { text: '🔍 Search "nick"', y: 290, action: () => this.testSearchUsers('nick') },
-      { text: '📋 Get by UID', y: 340, action: () => this.testGetUserByUid() },
-      { text: '👥 All Users', y: 390, action: () => this.testGetAllUsers() },
-      { text: '🆕 User Count', y: 440, action: () => this.testGetUserCount() }
-    ];
-    
-    // Leaderboard category buttons
-    const leaderboardTests = [
-      { text: '🏆 Top 10 Players', y: 190, action: () => this.testGetLeaderboard(10) },
-      { text: '🥇 Gold Rank', y: 240, action: () => this.testGetLeaderboardByRank('Gold') },
-      { text: '🥈 Silver Rank', y: 290, action: () => this.testGetLeaderboardByRank('Silver') },
-      { text: '🥉 Bronze Rank', y: 340, action: () => this.testGetLeaderboardByRank('Bronze') },
-      { text: '📊 My Rank', y: 390, action: () => this.testGetMyRank() }
-    ];
-    
-    // Wallet category buttons
-    const walletTests = [
-      { text: '💰 Get Balance', y: 190, action: () => this.testGetBalance('nicklaus') },
-      { text: '💳 Wallet Details', y: 240, action: () => this.testGetWallet('nicklaus') },
-      { text: '📜 Transactions', y: 290, action: () => this.testGetTransactions('nicklaus') },
-      { text: '➕ Add Funds', y: 340, action: () => this.testAddFunds() },
-      { text: '➖ Spend Funds', y: 390, action: () => this.testSpendFunds() }
-    ];
-    
-    // Stats category buttons
-    const statsTests = [
-      { text: '📊 Get Stats', y: 190, action: () => this.testGetStats('nicklaus') },
-      { text: '🎮 Update Game', y: 240, action: () => this.testUpdateGameStats() },
-      { text: '🏆 Check Achievements', y: 290, action: () => this.testCheckAchievements() },
-      { text: '📈 Experience', y: 340, action: () => this.testGetExperience() }
-    ];
-    
-    // Store all buttons
-    this.buttons = [];
-    
-    // Create all button sets
-    [...userTests, ...leaderboardTests, ...walletTests, ...statsTests].forEach((test) => {
-      const button = this.add.text(200, test.y, test.text, buttonStyle)
-        .setInteractive({ useHandCursor: true })
-        .setVisible(false);
-      
-      button.on('pointerover', () => {
-        button.setStyle(buttonHoverStyle);
-        button.setScale(1.05);
-      });
-      
-      button.on('pointerout', () => {
-        button.setStyle(buttonStyle);
-        button.setScale(1);
-      });
-      
-      button.on('pointerdown', () => {
-        this.clearResults();
-        this.showLoading();
-        test.action();
-      });
-      
-      this.buttons.push(button);
-    });
-    
-    // Store button sets for category switching
-    (this as any).userButtons = userTests.map((_, i) => this.buttons[i]);
-    (this as any).leaderboardButtons = leaderboardTests.map((_, i) => this.buttons[userTests.length + i]);
-    (this as any).walletButtons = walletTests.map((_, i) => this.buttons[userTests.length + leaderboardTests.length + i]);
-    (this as any).statsButtons = statsTests.map((_, i) => this.buttons[userTests.length + leaderboardTests.length + walletTests.length + i]);
-  }
-  
-  private selectCategory(category: string) {
-    this.currentCategory = category;
-    
-    // Update category buttons
-    this.categoryButtons.forEach((btn, i) => {
-      btn.setStyle({ backgroundColor: i === ['users', 'leaderboard', 'wallet', 'stats'].indexOf(category) ? '#ffd700' : '#4a4a4a' });
-    });
-    
-    // Show/hide relevant buttons
-    (this as any).userButtons.forEach((btn: Phaser.GameObjects.Text) => btn.setVisible(category === 'users'));
-    (this as any).leaderboardButtons.forEach((btn: Phaser.GameObjects.Text) => btn.setVisible(category === 'leaderboard'));
-    (this as any).walletButtons.forEach((btn: Phaser.GameObjects.Text) => btn.setVisible(category === 'wallet'));
-    (this as any).statsButtons.forEach((btn: Phaser.GameObjects.Text) => btn.setVisible(category === 'stats'));
-    
-    this.statusText.setText(`📂 Category: ${category.toUpperCase()}`);
-  }
-  
-  private createResultsContainer() {
-    // Results background
-    const resultsBg = this.add.graphics();
-    resultsBg.fillStyle(0x16213e, 0.9);
-    resultsBg.fillRoundedRect(420, 170, 360, 400, 10);
-    resultsBg.lineStyle(2, 0x4a4a4a, 1);
-    resultsBg.strokeRoundedRect(420, 170, 360, 400, 10);
-    
-    // Results title
-    this.add.text(600, 180, '📊 RESULTS', {
-      fontSize: '20px',
-      color: '#ffd700',
-      fontStyle: 'bold'
-    }).setOrigin(0.5);
-    
-    // Results container
-    this.resultsContainer = this.add.container(440, 210);
-  }
-  
-  private createBackButton() {
-    this.backButton = this.add.text(50, 550, '← BACK TO MENU', {
-      fontSize: '18px',
-      color: '#ffffff',
-      backgroundColor: '#e94560',
-      padding: { x: 12, y: 6 }
-    })
-    .setInteractive({ useHandCursor: true });
-    
-    this.backButton.on('pointerover', () => {
-      this.backButton.setStyle({ color: '#ffff00', backgroundColor: '#c73e54' });
-      this.backButton.setScale(1.05);
-    });
-    
-    this.backButton.on('pointerout', () => {
-      this.backButton.setStyle({ color: '#ffffff', backgroundColor: '#e94560' });
-      this.backButton.setScale(1);
-    });
-    
-    this.backButton.on('pointerdown', () => {
-      this.cameras.main.fadeOut(300, 0, 0, 0);
-      this.cameras.main.once('camerafadeoutcomplete', () => {
-        this.scene.start('StartScene');
-      });
-    });
-  }
-  
-  private addInstructions() {
-    this.add.text(600, 580, 'Click buttons to test queries', {
-      fontSize: '12px',
-      color: '#888888'
-    }).setOrigin(0.5);
-  }
-  
-  private showLoading() {
-    this.loadingIndicator.setVisible(true);
-    this.statusText.setText('⏳ Running query...');
-    this.statusText.setColor('#ffff00');
-    
-    this.tweens.add({
-      targets: this.loadingIndicator,
-      angle: 360,
-      duration: 1000,
-      repeat: -1
-    });
-  }
-  
-  private hideLoading() {
-    this.loadingIndicator.setVisible(false);
-    this.tweens.killTweensOf(this.loadingIndicator);
-    this.loadingIndicator.angle = 0;
-  }
-  
-  private clearResults() {
-    this.resultsContainer.removeAll(true);
-    this.resultsText = [];
-  }
-  
-  private displayResult(lines: string[], isError: boolean = false) {
-    this.hideLoading();
-    
-    if (isError) {
-      this.statusText.setText('❌ Query failed');
-      this.statusText.setColor('#ff0000');
+    // Background
+    if (this.textures.exists('ball-background')) {
+      const bg = this.add.image(180, 320, 'ball-background');
+      bg.setDisplaySize(360, 640);
+      bg.setDepth(-1);
     } else {
-      this.statusText.setText('✅ Query successful');
-      this.statusText.setColor('#00ff00');
+      this.cameras.main.setBackgroundColor('#1a3a1a');
     }
-    
-    lines.forEach((line, index) => {
-      const text = this.add.text(0, index * 22, line, {
-        fontSize: '13px',
-        color: isError ? '#ff8888' : '#ffffff',
-        fontFamily: 'monospace',
-        wordWrap: { width: 340 }
-      });
-      this.resultsContainer.add(text);
-      this.resultsText.push(text);
+
+    // Add some decorative elements
+    this.addBackgroundEffects();
+
+    // Create player (as a regular image)
+    this.createPlayer();
+
+    // Create ball (as a regular image)
+    this.createBall();
+
+    // Create opponent  // ← Add this
+    this.createOpponent();  // ← Add this
+    // Create UI
+    this.createUI();
+
+    // Set up input
+    this.setupInput();
+
+    // Start the game
+    this.gameActive = true;
+
+    // Set initial random direction
+    const angle = Phaser.Math.Between(0, 3) * 90 + 45; // 45, 135, 225, or 315 degrees
+    const rad = Phaser.Math.DegToRad(angle);
+    this.ballDirection.set(Math.cos(rad), Math.sin(rad));
+
+    // Start speed increase timer
+    this.lastSpeedIncrease = this.time.now;  // ← Add this
+  }
+
+  private createPlayer() {
+    // Create player at bottom of screen
+    this.player = this.add.image(180, 550, 'player');
+    this.player.setScale(0.15);
+
+    // Add player name
+    this.add.text(180, 590, 'YOU', {
+      fontSize: '14px',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 2
+    }).setOrigin(0.5);
+  }
+
+  private createBall() {
+    if (!this.textures.exists('ball')) {
+      console.error('❌ Ball texture not found');
+      return;
+    }
+
+    // Create ball at center
+    this.ball = this.add.image(180, 300, 'ball');
+    this.ball.setScale(0.15);
+  }
+  private hitOpponent() {
+    // Visual feedback for opponent hit
+    this.tweens.add({
+      targets: this.opponent,
+      scale: 0.2,
+      duration: 100,
+      yoyo: true
     });
+
+    // Calculate where the ball hit the opponent paddle (-1 to 1)
+    const hitPosition = (this.ball.x - this.opponent.x) / 30;
+    const clampedHit = Phaser.Math.Clamp(hitPosition, -0.9, 0.9);
+
+    // Add some randomness to make it less predictable
+    const randomFactor = Phaser.Math.FloatBetween(-0.3, 0.3);
+
+    // Force ball to go downward with angle based on hit position + randomness
+    this.ballDirection.x = clampedHit * 1.2 + randomFactor;
+    this.ballDirection.y = 0.7; // Base downward movement
+
+    // Clamp x to prevent going straight sideways
+    this.ballDirection.x = Phaser.Math.Clamp(this.ballDirection.x, -0.9, 0.9);
+
+    // Normalize to maintain consistent speed
+    this.ballDirection.normalize();
+
+    // Make sure it's actually pointing downward
+    if (this.ballDirection.y < 0) {
+      this.ballDirection.y = Math.abs(this.ballDirection.y);
+    }
+
+    // Slight speed increase on each hit
+    this.ballSpeed = Math.min(this.ballSpeed + 3, 400);
   }
-  
-  // =========== USER TESTS ===========
-  
-  private async testGetUser(username: string) {
-    try {
-      const user = await firebaseQueries.getUserByUsername(username);
-      
-      if (user) {
-        this.currentUser = user;
-        this.displayResult([
-          '✅ USER FOUND:',
-          `🆔 UID: ${user.uid}`,
-          `👤 Username: ${user.public.username}`,
-          `📛 Display: ${user.public.displayName}`,
-          `📧 Email: ${user.private.email}`,
-          `🏅 Rank: ${user.public.rank}`,
-          `📊 Level: ${user.public.level}`,
-          `💰 Balance: $${user.wallet.balance}`,
-          `🏆 High Score: ${user.stats.highScore}`,
-          `🎮 Games: ${user.stats.totalGames}`,
-          `📅 Joined: ${new Date(user.public.createdAt).toLocaleDateString()}`
-        ]);
-      } else {
-        this.displayResult([`❌ User "${username}" not found`], true);
-      }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testGetUserByEmail() {
-    const email = 'nicklaus@example.com';
-    try {
-      const user = await firebaseQueries.getUserByEmail(email);
-      
-      if (user) {
-        this.displayResult([
-          '✅ USER FOUND BY EMAIL:',
-          `👤 ${user.public.displayName}`,
-          `📧 ${user.private.email}`,
-          `🆔 ${user.uid}`
-        ]);
-      } else {
-        this.displayResult([`❌ Email "${email}" not found`], true);
-      }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testGetUserByUid() {
-    if (!this.currentUser) {
-      this.displayResult(['❌ No user selected', 'Run "Get nicklaus" first'], true);
-      return;
-    }
-    
-    try {
-      const user = await firebaseQueries.getUserByUid(this.currentUser.uid);
-      
-      if (user) {
-        this.displayResult([
-          '✅ USER BY UID:',
-          `🆔 ${user.uid}`,
-          `👤 ${user.public.username}`,
-          `✅ Verified`
-        ]);
-      }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testSearchUsers(term: string) {
-    try {
-      const results = await firebaseQueries.searchUsers(term);
-      
-      if (results.length > 0) {
-        const lines = [`✅ Found ${results.length} users:`, ''];
-        results.forEach((user, i) => {
-          lines.push(`${i + 1}. ${user.displayName} (@${user.username}) - ${user.rank}`);
-        });
-        this.displayResult(lines);
-      } else {
-        this.displayResult([`❌ No users matching "${term}"`], true);
-      }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testGetAllUsers() {
-    try {
-      const users = await firebaseQueries.getAllUsers();
-      
-      const lines = [`👥 TOTAL USERS: ${users.length}`, ''];
-      users.slice(0, 8).forEach((user, i) => {
-        lines.push(`${i + 1}. ${user.public.displayName} (Lvl ${user.public.level})`);
-      });
-      
-      if (users.length > 8) {
-        lines.push(`... and ${users.length - 8} more`);
-      }
-      
-      this.displayResult(lines);
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testGetUserCount() {
-    try {
-      const count = await firebaseQueries.getUserCount();
-      const active = await firebaseQueries.getActiveUsers();
-      
-      this.displayResult([
-        '📊 USER STATISTICS:',
-        `👥 Total Users: ${count}`,
-        `🟢 Active Now: ${active}`,
-        `📈 Growth: +${Math.floor(count * 0.1)} this week`
-      ]);
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  // =========== LEADERBOARD TESTS ===========
-  
-  private async testGetLeaderboard(limit: number) {
-    try {
-      const leaderboard = await firebaseQueries.getLeaderboard(limit);
-      
-      if (leaderboard.length > 0) {
-        const lines = ['🏆 TOP PLAYERS:', ''];
-        leaderboard.forEach((player, i) => {
-          const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-          lines.push(`${medal} ${player.displayName} - ${player.highScore} pts (Lvl ${player.level})`);
-        });
-        this.displayResult(lines);
-      }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testGetLeaderboardByRank(rank: string) {
-    try {
-      const players = await firebaseQueries.getLeaderboardByRank(rank, 5);
-      
-      const lines = [`🏆 TOP ${rank.toUpperCase()} PLAYERS:`, ''];
-      players.forEach((player, i) => {
-        lines.push(`${i + 1}. ${player.displayName} - ${player.highScore} pts`);
-      });
-      
-      this.displayResult(lines);
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testGetMyRank() {
-    if (!this.currentUser) {
-      this.displayResult(['❌ No user selected', 'Run "Get nicklaus" first'], true);
-      return;
-    }
-    
-    try {
-      const leaderboard = await firebaseQueries.getLeaderboard(100);
-      const myRank = leaderboard.findIndex(p => p.uid === this.currentUser?.uid) + 1;
-      
-      this.displayResult([
-        `👤 ${this.currentUser.public.displayName}'s RANK:`,
-        `🏆 Global Rank: #${myRank}`,
-        `📊 High Score: ${this.currentUser.stats.highScore}`,
-        `🏅 Rank: ${this.currentUser.public.rank}`,
-        `📈 Better than ${Math.round((1 - myRank/leaderboard.length) * 100)}% of players`
-      ]);
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  // =========== WALLET TESTS ===========
-  
-  private async testGetBalance(username: string) {
-    try {
-      const user = await firebaseQueries.getUserByUsername(username);
-      
-      if (user) {
-        const balance = await firebaseQueries.getWalletBalance(user.uid);
-        this.displayResult([
-          `💰 WALLET BALANCE:`,
-          `👤 User: ${username}`,
-          `💵 Balance: $${balance.toFixed(2)}`,
-          `💱 Currency: USD`,
-          `⏱️ Updated: ${new Date(user.wallet.lastUpdated).toLocaleString()}`
-        ]);
-      }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testGetWallet(username: string) {
-    try {
-      const user = await firebaseQueries.getUserByUsername(username);
-      
-      if (user) {
-        this.displayResult([
-          '💳 WALLET DETAILS:',
-          `💰 Balance: $${user.wallet.balance}`,
-          `🎁 Bonus: $${user.wallet.totalBonus}`,
-          `🏆 Won: $${user.wallet.totalWon}`,
-          `💸 Lost: $${user.wallet.totalLost}`,
-          `📥 Deposited: $${user.wallet.totalDeposited}`,
-          `📤 Withdrawn: $${user.wallet.totalWithdrawn}`
-        ]);
-      }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testGetTransactions(username: string) {
-    try {
-      const user = await firebaseQueries.getUserByUsername(username);
-      
-      if (user) {
-        const transactions = await firebaseQueries.getUserTransactions(user.uid, 5);
-        
-        if (transactions.length > 0) {
-          const lines = ['📜 RECENT TRANSACTIONS:', ''];
-          transactions.forEach((tx, i) => {
-            const sign = tx.amount > 0 ? '+' : '';
-            lines.push(`${i + 1}. ${sign}$${tx.amount} - ${tx.description}`);
-          });
-          this.displayResult(lines);
-        } else {
-          this.displayResult(['📜 No transactions found']);
+
+
+  private checkPaddleCollision() {
+    if (!this.gameActive || !this.ball || !this.player || !this.opponent) return;
+
+    // Ball collision box
+    const ballLeft = this.ball.x - 12;
+    const ballRight = this.ball.x + 12;
+    const ballTop = this.ball.y - 12;
+    const ballBottom = this.ball.y + 12;
+
+    // Check player paddle collision (ball moving downward)
+    if (this.ballDirection.y > 0) {
+      const paddleLeft = this.player.x - 35;
+      const paddleRight = this.player.x + 35;
+      const paddleTop = this.player.y - 10;
+      const paddleBottom = this.player.y + 10;
+
+      // Check if ball overlaps paddle and is at the right Y position
+      if (ballLeft < paddleRight &&
+        ballRight > paddleLeft &&
+        ballBottom >= paddleTop &&
+        ballTop <= paddleBottom) {
+
+        // Make sure ball is actually hitting from above
+        if (this.ball.y < this.player.y) {
+          this.hitPlayer();
+          // Adjust ball position to prevent sticking
+          this.ball.y = this.player.y - 22;
         }
       }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
     }
-  }
-  
-  private async testAddFunds() {
-    if (!this.currentUser) {
-      this.displayResult(['❌ No user selected'], true);
-      return;
-    }
-    
-    try {
-      const success = await firebaseQueries.updateWalletBalance(
-        this.currentUser.uid,
-        10.00,
-        'bonus',
-        'Test bonus'
-      );
-      
-      if (success) {
-        const newBalance = await firebaseQueries.getWalletBalance(this.currentUser.uid);
-        this.displayResult([
-          '✅ FUNDS ADDED:',
-          `➕ Added: $10.00`,
-          `💰 New Balance: $${newBalance}`,
-          `⏱️ ${new Date().toLocaleTimeString()}`
-        ]);
-        
-        // Refresh user data
-        this.currentUser = await firebaseQueries.getUserByUid(this.currentUser.uid);
+
+    // Check opponent paddle collision (ball moving upward)
+    if (this.ballDirection.y < 0) {
+      const paddleLeft = this.opponent.x - 20;
+      const paddleRight = this.opponent.x + 20;
+      const paddleTop = this.opponent.y - 10;
+      const paddleBottom = this.opponent.y + 10;
+
+      // Check if ball overlaps paddle and is at the right Y position
+      if (ballLeft < paddleRight &&
+        ballRight > paddleLeft &&
+        ballBottom >= paddleTop &&
+        ballTop <= paddleBottom) {
+
+        // Make sure ball is actually hitting from below
+        if (this.ball.y > this.opponent.y) {
+          this.hitOpponent();
+          // Adjust ball position to prevent sticking
+          this.ball.y = this.opponent.y + 22;
+        }
       }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
     }
   }
-  
-  private async testSpendFunds() {
-    if (!this.currentUser) {
-      this.displayResult(['❌ No user selected'], true);
-      return;
+
+  private hitPlayer() {
+
+    // Visual feedback
+    this.tweens.add({
+      targets: this.player,
+      scale: 0.2,
+      duration: 100,
+      yoyo: true
+    });
+
+    // Calculate where the ball hit the paddle (-1 to 1)
+    const hitPosition = (this.ball.x - this.player.x) / 30;
+    const clampedHit = Phaser.Math.Clamp(hitPosition, -0.9, 0.9);
+
+    // Add randomness to make it less predictable
+    const randomFactor = Phaser.Math.FloatBetween(-0.3, 0.3);
+
+    // Force ball to go upward with angle based on hit position + randomness
+    this.ballDirection.x = clampedHit * 1.2 + randomFactor;
+    this.ballDirection.y = -0.7; // Base upward movement (negative for up)
+
+    // Clamp x to prevent going straight sideways
+    this.ballDirection.x = Phaser.Math.Clamp(this.ballDirection.x, -0.9, 0.9);
+
+    // Normalize to maintain consistent speed
+    this.ballDirection.normalize();
+
+    // Make sure it's actually pointing upward
+    if (this.ballDirection.y > 0) {
+      this.ballDirection.y = -Math.abs(this.ballDirection.y);
     }
-    
-    try {
-      const success = await firebaseQueries.updateWalletBalance(
-        this.currentUser.uid,
-        -5.00,
-        'loss',
-        'Game entry fee'
-      );
-      
-      if (success) {
-        const newBalance = await firebaseQueries.getWalletBalance(this.currentUser.uid);
-        this.displayResult([
-          '✅ FUNDS SPENT:',
-          `➖ Spent: $5.00`,
-          `💰 New Balance: $${newBalance}`,
-          `⏱️ ${new Date().toLocaleTimeString()}`
-        ]);
-        
-        // Refresh user data
-        this.currentUser = await firebaseQueries.getUserByUid(this.currentUser.uid);
-      } else {
-        this.displayResult(['❌ Insufficient funds'], true);
+
+    // Slight speed increase on each hit
+    this.ballSpeed = Math.min(this.ballSpeed + 5, 400);
+  }
+  private createUI() {
+
+
+    const playerStartX = 80;
+    for (let i = 0; i < this.playerHealth; i++) {
+      const healthBar = this.add.image(playerStartX + (i * 40), 620, 'ball');
+      healthBar.setScale(0.1);
+      healthBar.setTint(0x00ff00); // Green for player
+      this.playerHealthBars.push(healthBar);
+    }
+    // Instructions
+    // Opponent health bars at top
+    const opponentStartX = 80;
+    for (let i = 0; i < this.opponentHealth; i++) {
+      const healthBar = this.add.image(opponentStartX + (i * 40), 20, 'ball');
+      healthBar.setScale(0.1);
+      healthBar.setTint(0x00ff00); // Green for player
+      this.opponentHealthBars.push(healthBar);
+    }
+  }
+  private createOpponent() {
+    // Create opponent at top of screen
+    this.opponent = this.add.image(180, 50, 'player');  // Same sprite as player
+    this.opponent.setScale(0.15);
+    this.opponent.setFlipY(true);  // Flip it upside down to look different
+
+    // Add opponent name
+    this.add.text(180, 30, 'CPU', {
+      fontSize: '14px',
+      color: '#ff4444',
+      stroke: '#000000',
+      strokeThickness: 2
+    }).setOrigin(0.5);
+  }
+  private setupInput() {
+    // Keyboard controls
+    if (this.input.keyboard) {
+      this.cursors = this.input.keyboard.createCursorKeys();
+    }
+
+    // Touch controls
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (pointer.isDown && this.player) {
+        this.movePlayerWithPointer(pointer);
       }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  // =========== STATS TESTS ===========
-  
-  private async testGetStats(username: string) {
-    try {
-      const user = await firebaseQueries.getUserByUsername(username);
-      
-      if (user) {
-        this.displayResult([
-          '📊 PLAYER STATS:',
-          `🏆 High Score: ${user.stats.highScore}`,
-          `🎮 Total Games: ${user.stats.totalGames}`,
-          `🏅 Wins: ${user.stats.totalWins}`,
-          `💔 Losses: ${user.stats.totalLosses}`,
-          `🔥 Win Streak: ${user.stats.winStreak}`,
-          `✨ Experience: ${user.stats.experience}`,
-          `🏅 Rank: ${user.public.rank}`,
-          `📈 Level: ${user.public.level}`,
-          `🎯 Achievements: ${user.stats.achievements.length}`
-        ]);
+    });
+
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (this.player) {
+        this.movePlayerWithPointer(pointer);
       }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
+    });
   }
-  
-  private async testUpdateGameStats() {
-    if (!this.currentUser) {
-      this.displayResult(['❌ No user selected'], true);
+
+  private movePlayerWithPointer(pointer: Phaser.Input.Pointer) {
+    if (!this.player) return;
+
+    let newX = Phaser.Math.Clamp(pointer.x, 30, 330);
+    this.player.x = newX;
+  }
+
+  update(time: number, delta: number) {
+    if (!this.gameActive || !this.ball || !this.player || !this.opponent) return;
+
+    // Manual ball movement
+
+    // Check for speed increase every 30 seconds
+    if (time - this.lastSpeedIncrease >= this.speedIncreaseInterval) {
+      this.increaseSpeed();
+      this.lastSpeedIncrease = time;
+    }
+
+
+    const deltaSeconds = delta / 1000;
+
+    // Move ball in current direction
+    const moveX = this.ballDirection.x * this.ballSpeed * deltaSeconds;
+    const moveY = this.ballDirection.y * this.ballSpeed * deltaSeconds;
+
+    // Check for wall collisions
+    if (this.ball.x + moveX <= 12 || this.ball.x + moveX >= 348) {
+      this.ballDirection.x *= -1;
+    }
+
+    // Check if ball missed player paddle (bottom)
+    if (this.ball.y + (this.ballDirection.y * this.ballSpeed * deltaSeconds) >= 628) {
+      this.resetBall('opponent');
       return;
     }
-    
-    try {
-      const newScore = Math.floor(Math.random() * 200) + 50;
-      const won = Math.random() > 0.5;
-      
-      await firebaseQueries.updateUserStats(this.currentUser.uid, newScore, won);
-      
-      // Refresh user data
-      this.currentUser = await firebaseQueries.getUserByUid(this.currentUser.uid);
-      
-      this.displayResult([
-        '✅ GAME STATS UPDATED:',
-        `🎮 New Score: ${newScore}`,
-        `🏆 Result: ${won ? 'WIN' : 'LOSS'}`,
-        `📊 High Score: ${this.currentUser?.stats.highScore}`,
-        `🔥 Win Streak: ${this.currentUser?.stats.winStreak}`
-      ]);
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
-    }
-  }
-  
-  private async testCheckAchievements() {
-    if (!this.currentUser) {
-      this.displayResult(['❌ No user selected'], true);
+
+    // Check if ball missed opponent paddle (top)
+    if (this.ball.y + (this.ballDirection.y * this.ballSpeed * deltaSeconds) <= 12) {
+      this.resetBall('player');
       return;
     }
-    
-    try {
-      const unlocked = await firebaseQueries.checkAchievements(
-        this.currentUser.uid,
-        this.currentUser.stats.highScore
-      );
-      
-      if (unlocked.length > 0) {
-        this.displayResult([
-          '🏆 ACHIEVEMENTS UNLOCKED:',
-          ...unlocked.map(a => `  ✨ ${a}`),
-          '',
-          `💰 Bonus: $${unlocked.length * 5}.00 added!`
-        ]);
-        
-        // Refresh user data
-        this.currentUser = await firebaseQueries.getUserByUid(this.currentUser.uid);
-      } else {
-        this.displayResult(['📋 No new achievements']);
+
+    // Check for paddle collision
+    this.checkPaddleCollision();
+
+    // Check if ball missed the paddle
+    if (this.ball.y + moveY >= 628) {
+      this.resetBall();
+      return;
+    }
+
+    // Opponent AI movement
+    if (this.opponent && this.ball) {
+      // Move opponent toward ball position
+      const targetX = this.ball.x;
+      const currentX = this.opponent.x;
+
+      if (Math.abs(targetX - currentX) > this.opponentSpeed) {
+        if (targetX > currentX) {
+          this.opponent.x = Math.min(330, this.opponent.x + this.opponentSpeed);
+        } else {
+          this.opponent.x = Math.max(30, this.opponent.x - this.opponentSpeed);
+        }
       }
-    } catch (error) {
-      this.displayResult(['❌ Error:', String(error)], true);
     }
+
+    // Apply movement
+    this.ball.x += this.ballDirection.x * this.ballSpeed * deltaSeconds;
+    this.ball.y += this.ballDirection.y * this.ballSpeed * deltaSeconds;
+
+    // Keyboard controls for player
+    if (this.cursors) {
+      if (this.cursors.left?.isDown) {
+        this.player.x = Math.max(30, this.player.x - this.moveSpeed);
+      }
+      if (this.cursors.right?.isDown) {
+        this.player.x = Math.min(330, this.player.x + this.moveSpeed);
+      }
+    }
+
+    // Add rotation for visual effect
+    this.ball.rotation += 0.02;
   }
-  
-  private async testGetExperience() {
-    if (!this.currentUser) {
-      this.displayResult(['❌ No user selected'], true);
-      return;
+
+  private gameOver(message: string) {
+    this.gameActive = false;
+
+    // Show game over text
+    this.add.text(180, 280, 'GAME OVER', {
+      fontSize: '32px',
+      color: '#ff0000',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 4
+    }).setOrigin(0.5);
+
+    this.add.text(180, 320, message, {
+      fontSize: '24px',
+      color: '#ffff00',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 3
+    }).setOrigin(0.5);
+
+    this.add.text(180, 360, 'Click to restart', {
+      fontSize: '16px',
+      color: '#ffffff'
+    }).setOrigin(0.5);
+
+    // Add restart handler
+    this.input.once('pointerdown', () => {
+      this.scene.restart({ username: this.username });
+    });
+  }
+  private resetBall(whoScored: 'player' | 'opponent') {
+    if (whoScored === 'opponent') {
+      // Opponent scored - remove player health
+      this.playerHealth--;
+
+      // Remove player health bar
+      if (this.playerHealthBars.length > 0) {
+        this.playerHealthBars[this.playerHealthBars.length - 1].destroy();
+        this.playerHealthBars.pop();
+      }
+
+      // Flash red for player damage
+      this.cameras.main.flash(300, 255, 0, 0, 0.5);
+
+      // Check if player lost
+      if (this.playerHealth <= 0) {
+        this.speedMultiplier = 1.0;  // ← Reset speed
+        this.gameOver('CPU Wins!');
+        return;
+      }
+    } else {
+      // Player scored - remove opponent health
+      this.opponentHealth--;
+
+      // Remove opponent health bar
+      if (this.opponentHealthBars.length > 0) {
+        this.opponentHealthBars[this.opponentHealthBars.length - 1].destroy();
+        this.opponentHealthBars.pop();
+      }
+
+      // Flash blue for opponent damage
+      this.cameras.main.flash(300, 0, 0, 255, 0.5);
+
+      // Check if opponent lost
+      if (this.opponentHealth <= 0) {
+        this.speedMultiplier = 1.0;  // ← Reset speed
+        this.gameOver('You Win!');
+        return;
+      }
     }
-    
-    const nextLevelExp = this.currentUser.public.level * 100;
-    const expToNext = nextLevelExp - this.currentUser.stats.experience;
-    
-    this.displayResult([
-      '📈 EXPERIENCE PROGRESS:',
-      `✨ Current EXP: ${this.currentUser.stats.experience}`,
-      `📊 Level: ${this.currentUser.public.level}`,
-      `🎯 Next Level: ${nextLevelExp} EXP`,
-      `📉 Need: ${expToNext} more EXP`,
-      `📈 Progress: ${Math.round((this.currentUser.stats.experience / nextLevelExp) * 100)}%`
-    ]);
+
+    // Reset ball position to center
+    this.ball.x = 180;
+    this.ball.y = 320;
+
+    // Reset ball speed
+    this.ballSpeed = 200;
+
+    // Serve toward the player who just got scored on
+    let angle;
+    if (whoScored === 'opponent') {
+      // Opponent scored, serve toward player (downward)
+      angle = Phaser.Math.Between(225, 315);
+    } else {
+      // Player scored, serve toward opponent (upward)
+      angle = Phaser.Math.Between(45, 135);
+    }
+
+    const rad = Phaser.Math.DegToRad(angle);
+    this.ballDirection.set(Math.cos(rad), Math.sin(rad));
+  }
+  private increaseSpeed() {
+    // Multiply speed by 1.5
+    this.speedMultiplier *= 1.5;
+    this.ballSpeed = 200 * this.speedMultiplier; // Reset base speed with multiplier
+
+    // Visual feedback - flash white
+    this.cameras.main.flash(500, 255, 255, 255, 0.3);
+
+    // Show speed increase text
+    const speedText = this.add.text(180, 200, `SPEED x${this.speedMultiplier.toFixed(1)}!`, {
+      fontSize: '28px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#ff0000',
+      strokeThickness: 4
+    }).setOrigin(0.5);
+
+    // Animate and remove the text
+    this.tweens.add({
+      targets: speedText,
+      y: 150,
+      alpha: 0,
+      duration: 2000,
+      ease: 'Power2',
+      onComplete: () => {
+        speedText.destroy();
+      }
+    });
+
+    console.log(`⚡ Speed increased to ${this.ballSpeed} (${this.speedMultiplier}x)`);
+  }
+  private addBackgroundEffects() {
+    for (let i = 0; i < 5; i++) {
+      const x = Phaser.Math.Between(50, 310);
+      const y = Phaser.Math.Between(100, 540);
+      const circle = this.add.circle(x, y, 10, 0xffaa00, 0.05);
+
+      this.tweens.add({
+        targets: circle,
+        y: y + 20,
+        alpha: 0.1,
+        duration: 3000 + i * 500,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut'
+      });
+    }
   }
 }

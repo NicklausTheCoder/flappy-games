@@ -196,10 +196,31 @@ class MultiGameQueryService {
       const snapshot = await get(userRef);
 
       if (snapshot.exists()) {
-        return {
+        const userData = snapshot.val();
+
+        // CRITICAL FIX: Get the correct balance from wallets/ path
+        const walletRef = ref(db, `wallets/${uid}`);
+        const walletSnapshot = await get(walletRef);
+
+        let correctBalance = userData.wallet?.balance || 0;
+
+        if (walletSnapshot.exists()) {
+          const walletData = walletSnapshot.val();
+          correctBalance = walletData.balance || correctBalance;
+        }
+
+        // Create the complete user object with correct balance
+        const completeUser: CompleteUser = {
           uid,
-          ...snapshot.val()
-        } as CompleteUser;
+          ...userData
+        };
+
+        // Override the wallet balance with the correct one
+        if (completeUser.wallet) {
+          completeUser.wallet.balance = correctBalance;
+        }
+
+        return completeUser;
       }
       return null;
     } catch (error) {
@@ -566,43 +587,43 @@ class MultiGameQueryService {
 
   // =========== WALLET METHODS (Global) ===========
 
-async getWalletBalance(uid: string): Promise<number> {
+  async getWalletBalance(uid: string): Promise<number> {
     try {
-        // Use the wallets/ path which has the correct balance
-        const balanceRef = ref(db, `wallets/${uid}/balance`);
-        const snapshot = await get(balanceRef);
-        return snapshot.exists() ? snapshot.val() : 0;
+      // Use the wallets/ path which has the correct balance
+      const balanceRef = ref(db, `wallets/${uid}/balance`);
+      const snapshot = await get(balanceRef);
+      return snapshot.exists() ? snapshot.val() : 0;
     } catch (error) {
-        console.error('Error in getWalletBalance:', error);
-        return 0;
+      console.error('Error in getWalletBalance:', error);
+      return 0;
     }
-}
+  }
 
- async updateWalletBalance(uid: string, amount: number, type: string, description: string): Promise<boolean> {
+  async updateWalletBalance(uid: string, amount: number, type: string, description: string): Promise<boolean> {
     try {
-        // Update the wallets/ path
-        const walletRef = ref(db, `wallets/${uid}`);
-        const snapshot = await get(walletRef);
+      // Update the wallets/ path
+      const walletRef = ref(db, `wallets/${uid}`);
+      const snapshot = await get(walletRef);
 
-        if (snapshot.exists()) {
-            const wallet = snapshot.val();
-            const newBalance = wallet.balance + amount;
+      if (snapshot.exists()) {
+        const wallet = snapshot.val();
+        const newBalance = (wallet.balance || 0) + amount;
 
-            if (newBalance < 0) return false;
+        if (newBalance < 0) return false;
 
-            await update(ref(db, `wallets/${uid}`), {
-                balance: newBalance,
-                lastUpdated: new Date().toISOString()
-            });
+        await update(ref(db, `wallets/${uid}`), {
+          balance: newBalance,
+          lastUpdated: new Date().toISOString()
+        });
 
-            return true;
-        }
-        return false;
+        return true;
+      }
+      return false;
     } catch (error) {
-        console.error('Error in updateWalletBalance:', error);
-        return false;
+      console.error('Error in updateWalletBalance:', error);
+      return false;
     }
-}
+  }
 
   // =========== UTILITY METHODS ===========
 

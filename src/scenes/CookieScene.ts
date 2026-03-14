@@ -2,10 +2,25 @@
 import Phaser from 'phaser';
 import CryptoJS from 'crypto-js';
 
+
+// Add this at the top of CookieScene.ts, after the imports
+declare global {
+    interface Window {
+        gameUser?: {
+            username: string;
+            displayName?: string;
+            uid?: string;
+            email?: string;
+            loginTime?: number;
+            rememberMe?: boolean;
+        };
+    }
+}
+
 export class CookieScene extends Phaser.Scene {
     // Same secret key as your login page
     private readonly SECRET_KEY = 'my-super-secret-key-123';
-    
+
     // Session configuration
     private readonly SESSION_CONFIG = {
         SESSION_TIMEOUT: 30 * 60 * 1000,        // 30 minutes (in milliseconds)
@@ -13,38 +28,38 @@ export class CookieScene extends Phaser.Scene {
         MAX_IDLE_TIME: 15 * 60 * 1000,          // 15 minutes idle timeout
         RENEWAL_WINDOW: 5 * 60 * 1000            // Renew session if within 5 minutes of expiry
     };
-    
+
     // Game display names - ADD BALL CRUSH
     private readonly GAME_NAMES: Record<string, string> = {
         'flappy-bird': 'Flappy Bird',
         'sky-shooter': 'Sky Shooter',
         'ball-crush': 'Ball Crush'
     };
-    
+
     // Game loader mapping - ADD BALL CRUSH
     private readonly LOADER_MAP: Record<string, string> = {
         'flappy-bird': 'FlappyBirdLoaderScene',
         'sky-shooter': 'SkyShooterLoaderScene',
         'ball-crush': 'BallCrushLoaderScene'
     };
-    
+
     constructor() {
         super({ key: 'CookieScene' });
     }
-    
+
     create() {
         console.log('🍪 CookieScene - checking for user data...');
-        
+
         // Get gameId from registry (set in main.ts)
         const gameId = this.registry.get('gameId') || 'flappy-bird';
         console.log(`🎮 Game: ${gameId}`);
-        
+
         // Check multiple sources for user data with expiration
         const userData = this.getUserFromStorage();
-        
+
         if (userData) {
             console.log('✅ User found in storage:', userData);
-            
+
             // Check if session is expired
             if (this.isSessionExpired(userData)) {
                 console.log('⏰ Session expired, clearing data');
@@ -52,35 +67,35 @@ export class CookieScene extends Phaser.Scene {
                 this.showLoginScreen(gameId, 'Your session has expired. Please log in again.');
                 return;
             }
-            
+
             // Check if we should renew the session
             if (this.shouldRenewSession(userData)) {
                 console.log('🔄 Renewing session');
                 this.renewSession(userData);
             }
-            
+
             // Store in registry for other scenes
             this.registry.set('username', userData.username);
             this.registry.set('userData', userData);
             this.registry.set('isAuthenticated', true);
-            
+
             // Start idle timer monitoring
             this.startIdleTimer();
-            
+
             // Route to the correct game loader
             this.routeToGameLoader(gameId, userData.username);
-            
+
         } else {
             console.log('❌ No user found in storage');
             this.showLoginScreen(gameId);
         }
     }
-    
+
     private routeToGameLoader(gameId: string, username: string) {
         console.log(`🚀 Routing to ${gameId} loader...`);
-        
+
         const loaderScene = this.LOADER_MAP[gameId];
-        
+
         if (loaderScene) {
             this.scene.start(loaderScene, { username: username });
         } else {
@@ -88,15 +103,31 @@ export class CookieScene extends Phaser.Scene {
             this.scene.start('FlappyBirdLoaderScene', { username: username });
         }
     }
-    
+
     private getUserFromStorage(): any | null {
+        // PRIORITY 0: Check window.gameUser (set by main.ts from URL)
+        const windowUser = this.getUserFromWindow();
+        if (windowUser) {
+            console.log('✅ Using user from window.gameUser:', windowUser);
+
+            // Save to storage for future use
+            this.saveUserToStorage(windowUser, windowUser.rememberMe || false);
+
+            // Clear the window.gameUser to avoid using it again
+            if (typeof window !== 'undefined') {
+                (window as any).gameUser = null;
+            }
+
+            return windowUser;
+        }
+
         // Priority 1: Check sessionStorage (cleared when browser closes)
         const sessionUser = sessionStorage.getItem('gameUser');
         if (sessionUser) {
             try {
                 const userData = JSON.parse(sessionUser);
                 console.log('📦 Found in sessionStorage:', userData);
-                
+
                 // Check if this is a valid session
                 if (this.isValidSession(userData)) {
                     return userData;
@@ -108,14 +139,14 @@ export class CookieScene extends Phaser.Scene {
                 console.error('Failed to parse sessionStorage data');
             }
         }
-        
+
         // Priority 2: Check localStorage (persists across browser sessions)
         const localUser = localStorage.getItem('gameUser');
         if (localUser) {
             try {
                 const userData = JSON.parse(localUser);
                 console.log('💾 Found in localStorage:', userData);
-                
+
                 // Check if this is a valid session
                 if (this.isValidSession(userData)) {
                     return userData;
@@ -127,108 +158,108 @@ export class CookieScene extends Phaser.Scene {
                 console.error('Failed to parse localStorage data');
             }
         }
-        
+
         // Priority 3: Check URL parameters (for first-time login) - WITH DECRYPTION
         const urlUser = this.getUserFromUrl();
         if (urlUser) {
             return urlUser;
         }
-        
+
         // Priority 4: Check cookies (fallback)
         const cookieUser = this.getCookie('username');
         if (cookieUser) {
             console.log('🍪 Found in cookies:', cookieUser);
-            
+
             // Migrate cookie to storage for future use
             const userData = this.createUserData(cookieUser, false);
             this.saveUserToStorage(userData, false);
             return userData;
         }
-        
+
         return null;
     }
-    
+
     private isValidSession(userData: any): boolean {
         // Check if userData has required fields
         if (!userData || !userData.username || !userData.loginTime) {
             return false;
         }
-        
+
         // Check if session is expired
         return !this.isSessionExpired(userData);
     }
-    
+
     private isSessionExpired(userData: any): boolean {
         const now = Date.now();
         const loginTime = userData.loginTime;
         const rememberMe = userData.rememberMe || false;
-        
+
         // Choose timeout based on remember me
-        const timeout = rememberMe ? 
-            this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT : 
+        const timeout = rememberMe ?
+            this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT :
             this.SESSION_CONFIG.SESSION_TIMEOUT;
-        
+
         // Check if session has expired
         const expired = (now - loginTime) > timeout;
-        
+
         if (expired) {
             console.log(`⏰ Session expired after ${timeout / (60 * 1000)} minutes`);
         }
-        
+
         return expired;
     }
-    
+
     private shouldRenewSession(userData: any): boolean {
         const now = Date.now();
         const loginTime = userData.loginTime;
         const rememberMe = userData.rememberMe || false;
-        
-        const timeout = rememberMe ? 
-            this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT : 
+
+        const timeout = rememberMe ?
+            this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT :
             this.SESSION_CONFIG.SESSION_TIMEOUT;
-        
+
         // Renew if within renewal window of expiry
         const timeUntilExpiry = (loginTime + timeout) - now;
         return timeUntilExpiry < this.SESSION_CONFIG.RENEWAL_WINDOW;
     }
-    
+
     private renewSession(userData: any) {
         // Update login time to now
         userData.loginTime = Date.now();
         userData.renewedAt = Date.now();
-        
+
         // Save updated data
         this.saveUserToStorage(userData, userData.rememberMe);
-        
-        console.log('🔄 Session renewed until:', new Date(userData.loginTime + 
-            (userData.rememberMe ? 
-                this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT : 
+
+        console.log('🔄 Session renewed until:', new Date(userData.loginTime +
+            (userData.rememberMe ?
+                this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT :
                 this.SESSION_CONFIG.SESSION_TIMEOUT
             )).toLocaleString());
     }
-    
+
     private startIdleTimer() {
         let idleTime = 0;
-        
+
         // Reset idle time on user activity
         const resetIdle = () => {
             idleTime = 0;
         };
-        
+
         // Add event listeners for user activity
         window.addEventListener('mousemove', resetIdle);
         window.addEventListener('keypress', resetIdle);
         window.addEventListener('touchstart', resetIdle);
         window.addEventListener('click', resetIdle);
         window.addEventListener('scroll', resetIdle);
-        
+
         // Check idle time every minute
         const idleInterval = setInterval(() => {
             idleTime += 60000; // Add 1 minute
-            
+
             if (idleTime >= this.SESSION_CONFIG.MAX_IDLE_TIME) {
                 console.log('💤 User idle for too long, logging out');
-                
+
                 // Clear interval and remove listeners
                 clearInterval(idleInterval);
                 window.removeEventListener('mousemove', resetIdle);
@@ -236,42 +267,42 @@ export class CookieScene extends Phaser.Scene {
                 window.removeEventListener('touchstart', resetIdle);
                 window.removeEventListener('click', resetIdle);
                 window.removeEventListener('scroll', resetIdle);
-                
+
                 // Log out the user
                 this.logout('idle');
             }
         }, 60000);
-        
+
         // Store interval ID for cleanup
         (window as any).idleInterval = idleInterval;
     }
-    
+
     private getUserFromUrl(): any | null {
         const urlParams = new URLSearchParams(window.location.search);
         const encryptedData = urlParams.get('user');
-        
+
         if (encryptedData) {
             console.log('🔗 Found encrypted data in URL:', encryptedData);
-            
+
             try {
                 // Decrypt the data
                 const decrypted = this.decryptData(encryptedData);
                 console.log('🔓 Decrypted data:', decrypted);
-                
+
                 if (decrypted && decrypted.username) {
                     // Create user data with proper timestamps
                     const userData = this.createUserData(
-                        decrypted.username, 
+                        decrypted.username,
                         decrypted.rememberMe || false
                     );
-                    
+
                     // Save to storage for future visits
                     this.saveUserToStorage(userData, userData.rememberMe);
-                    
+
                     // Clean URL (remove the parameter)
                     const cleanUrl = window.location.pathname;
                     window.history.replaceState({}, document.title, cleanUrl);
-                    
+
                     return userData;
                 }
             } catch (e) {
@@ -280,7 +311,7 @@ export class CookieScene extends Phaser.Scene {
         }
         return null;
     }
-    
+
     private createUserData(username: string, rememberMe: boolean): any {
         return {
             username: username,
@@ -292,26 +323,26 @@ export class CookieScene extends Phaser.Scene {
             userAgent: navigator.userAgent
         };
     }
-    
+
     private decryptData(encryptedData: string): any | null {
         try {
             // First, restore the URL-safe characters
             const base64 = encryptedData
                 .replace(/_/g, '/')
                 .replace(/-/g, '+');
-            
+
             console.log('🔄 Restored base64:', base64);
-            
+
             // Decrypt
             const bytes = CryptoJS.AES.decrypt(base64, this.SECRET_KEY);
             const decryptedString = bytes.toString(CryptoJS.enc.Utf8);
-            
+
             console.log('📄 Decrypted string:', decryptedString);
-            
+
             if (!decryptedString) {
                 throw new Error('Decryption failed - empty result');
             }
-            
+
             // Parse JSON
             return JSON.parse(decryptedString);
         } catch (error) {
@@ -319,14 +350,14 @@ export class CookieScene extends Phaser.Scene {
             return null;
         }
     }
-    
+
     private saveUserToStorage(userData: any, remember: boolean = true) {
         // Add last updated timestamp
         userData.lastUpdated = Date.now();
-        
+
         // Always save to sessionStorage
         sessionStorage.setItem('gameUser', JSON.stringify(userData));
-        
+
         // If remember me is true, also save to localStorage
         if (remember) {
             localStorage.setItem('gameUser', JSON.stringify(userData));
@@ -336,18 +367,18 @@ export class CookieScene extends Phaser.Scene {
             localStorage.removeItem('gameUser');
             console.log('📦 Saved to sessionStorage only');
         }
-        
-        console.log('📦 Session expires:', new Date(userData.loginTime + 
-            (remember ? 
-                this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT : 
+
+        console.log('📦 Session expires:', new Date(userData.loginTime +
+            (remember ?
+                this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT :
                 this.SESSION_CONFIG.SESSION_TIMEOUT
             )).toLocaleString());
     }
-    
+
     private getCookie(name: string): string | null {
         const cookieString = document.cookie;
         if (!cookieString) return null;
-        
+
         const cookies = cookieString.split(';');
         for (let cookie of cookies) {
             const trimmed = cookie.trim();
@@ -362,29 +393,29 @@ export class CookieScene extends Phaser.Scene {
         }
         return null;
     }
-    
+
     private clearUserData() {
         sessionStorage.removeItem('gameUser');
         localStorage.removeItem('gameUser');
         document.cookie = 'username=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
-        
+
         this.registry.set('username', null);
         this.registry.set('userData', null);
         this.registry.set('isAuthenticated', false);
     }
-    
+
     private logout(reason: string = 'user') {
         console.log(`🚪 Logging out, reason: ${reason}`);
         this.clearUserData();
-        
+
         // Clear idle timer
         if ((window as any).idleInterval) {
             clearInterval((window as any).idleInterval);
         }
-        
+
         // Get gameId for login screen
         const gameId = this.registry.get('gameId') || 'flappy-bird';
-        
+
         // Show login screen with reason
         let message = 'Please log in to play';
         if (reason === 'expired') {
@@ -392,31 +423,31 @@ export class CookieScene extends Phaser.Scene {
         } else if (reason === 'idle') {
             message = 'You were idle too long. Please log in again.';
         }
-        
+
         this.showLoginScreen(gameId, message);
     }
-    
+
     private showLoginScreen(gameId: string = 'flappy-bird', message: string = 'Please log in to play') {
         // Clear any existing content
         this.cameras.main.setBackgroundColor('#0a0a2a');
-        
+
         // Get game display name
         const gameName = this.GAME_NAMES[gameId] || 'Game';
-        
+
         // Title
         this.add.text(180, 120, `🎮 ${gameName}`, {
             fontSize: '36px',
             color: '#ffd700',
             fontStyle: 'bold'
         }).setOrigin(0.5);
-        
+
         // Message
         this.add.text(180, 200, message, {
             fontSize: '16px',
             color: '#ffff00',
             wordWrap: { width: 280 }
         }).setOrigin(0.5);
-        
+
         // Login button
         const loginBtn = this.add.text(180, 280, '🔐 LOGIN', {
             fontSize: '24px',
@@ -424,13 +455,13 @@ export class CookieScene extends Phaser.Scene {
             backgroundColor: '#4CAF50',
             padding: { x: 40, y: 15 }
         })
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true });
-        
+            .setOrigin(0.5)
+            .setInteractive({ useHandCursor: true });
+
         loginBtn.on('pointerdown', () => {
             window.location.href = `http://localhost:5500/login.html?game=${gameId}`;
         });
-        
+
         // Demo login button
         const demoBtn = this.add.text(180, 360, '👤 DEMO LOGIN', {
             fontSize: '16px',
@@ -438,25 +469,49 @@ export class CookieScene extends Phaser.Scene {
             backgroundColor: '#2196F3',
             padding: { x: 20, y: 10 }
         })
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true });
-        
+            .setOrigin(0.5)
+            .setInteractive({ useHandCursor: true });
+
         demoBtn.on('pointerdown', () => {
             const demoData = this.createUserData(`demo_${gameId}`, false);
             this.saveUserToStorage(demoData, false);
             this.registry.set('username', demoData.username);
             this.registry.set('userData', demoData);
             this.registry.set('isAuthenticated', true);
-            
+
             // Route to game loader
             this.routeToGameLoader(gameId, demoData.username);
         });
-        
+
         // Session info
         this.add.text(180, 440, '⏱️ Session: 30 minutes\n💤 Idle timeout: 15 minutes\n💾 Remember me: 7 days', {
             fontSize: '12px',
             color: '#888888',
             align: 'center'
         }).setOrigin(0.5);
+    }
+    // Add this method to CookieScene.ts
+    private getUserFromWindow(): any | null {
+        // Check if window.gameUser exists (set by main.ts)
+        if (typeof window !== 'undefined' && (window as any).gameUser) {
+            const userData = (window as any).gameUser;
+            console.log('🪟 Found user data in window.gameUser:', userData);
+
+            // Convert to the format expected by the app
+            if (userData.username) {
+                const formattedUser = this.createUserData(
+                    userData.username,
+                    userData.rememberMe || false
+                );
+
+                // Add any additional fields from window.gameUser
+                if (userData.displayName) formattedUser.displayName = userData.displayName;
+                if (userData.uid) formattedUser.uid = userData.uid;
+                if (userData.email) formattedUser.email = userData.email;
+
+                return formattedUser;
+            }
+        }
+        return null;
     }
 }

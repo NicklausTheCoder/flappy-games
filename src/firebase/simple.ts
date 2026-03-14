@@ -104,99 +104,210 @@ export async function updateUserStats(
  */
 // src/firebase/simple.ts
 
+// src/firebase/simple.ts
+
+// src/firebase/simple.ts
+
+// src/firebase/simple.ts
+
+// =========== GET USER DATA ===========
 export async function getUserData(username: string): Promise<CompleteUserData | null> {
   try {
     console.log(`📡 Fetching data for user: ${username}`);
     
-    // Try to get user by username (key)
-    const userRef = ref(db, `users/${username}`);
-    const snapshot = await get(userRef);
+    // FIXED: Use byUsername, not byDisplayName
+    const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
+    const lookupSnapshot = await get(lookupRef);
     
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      console.log('✅ User found by username key:', data);
-      
-      return {
-        // Public
-        username: username,
-        displayName: data.public?.displayName || username,
-        avatar: data.public?.avatar || 'default',
-        rank: data.public?.rank || 'Bronze',
-        level: data.public?.level || 1,
-        createdAt: data.public?.createdAt || new Date().toISOString(),
-        
-        // Stats - THIS IS WHERE THE HIGH SCORE IS
-        highScore: data.stats?.highScore || 0,  // Should get 150
-        totalGames: data.stats?.totalGames || 0,
-        totalWins: data.stats?.totalWins || 0,
-        totalLosses: data.stats?.totalLosses || 0,
-        winStreak: data.stats?.winStreak || 0,
-        experience: data.stats?.experience || 0,
-        achievements: data.stats?.achievements || [],
-        
-        // Wallet
-        balance: data.wallet?.balance || 0,
-        totalDeposited: data.wallet?.totalDeposited || 0,
-        totalWithdrawn: data.wallet?.totalWithdrawn || 0,
-        totalWon: data.wallet?.totalWon || 0,
-        totalLost: data.wallet?.totalLost || 0,
-        totalBonus: data.wallet?.totalBonus || 0,
-        
-        // Metadata
-        lastLogin: data.private?.lastLogin || new Date().toISOString(),
-        isActive: data.public?.isOnline || false
-      };
-    } else {
-      console.log('❌ User not found by username key, trying to find by displayName...');
-      
-      // If not found by username key, try to search all users
-      const usersRef = ref(db, 'users');
-      const allUsersSnapshot = await get(usersRef);
-      
-      if (allUsersSnapshot.exists()) {
-        const users = allUsersSnapshot.val();
-        
-        // Look for user with matching displayName or username in public data
-        for (const [uid, userData] of Object.entries(users)) {
-          const publicData = (userData as any).public;
-          if (publicData?.displayName === username || publicData?.username === username) {
-            console.log('✅ User found by searching:', uid, userData);
-            
-            const data = userData as any;
-            return {
-              username: username,
-              displayName: publicData.displayName || username,
-              avatar: publicData.avatar || 'default',
-              rank: publicData.rank || 'Bronze',
-              level: publicData.level || 1,
-              createdAt: publicData.createdAt || new Date().toISOString(),
-              highScore: data.stats?.highScore || 0,
-              totalGames: data.stats?.totalGames || 0,
-              totalWins: data.stats?.totalWins || 0,
-              totalLosses: data.stats?.totalLosses || 0,
-              winStreak: data.stats?.winStreak || 0,
-              experience: data.stats?.experience || 0,
-              achievements: data.stats?.achievements || [],
-              balance: data.wallet?.balance || 0,
-              totalDeposited: data.wallet?.totalDeposited || 0,
-              totalWithdrawn: data.wallet?.totalWithdrawn || 0,
-              totalWon: data.wallet?.totalWon || 0,
-              totalLost: data.wallet?.totalLost || 0,
-              totalBonus: data.wallet?.totalBonus || 0,
-              lastLogin: data.private?.lastLogin || new Date().toISOString(),
-              isActive: publicData.isOnline || false
-            };
-          }
-        }
-      }
-      
-      console.log('📝 No user found, returning defaults');
+    if (!lookupSnapshot.exists()) {
+      console.log('❌ Username not found in lookup:', username);
       return getDefaultUserData(username);
     }
+    
+    const uid = lookupSnapshot.val();
+    console.log('✅ Found UID:', uid);
+    
+    // Rest of your code...
+    const userRef = ref(db, `users/${uid}`);
+    const userSnapshot = await get(userRef);
+    
+    if (!userSnapshot.exists()) {
+      console.log('❌ User data not found for UID:', uid);
+      return getDefaultUserData(username);
+    }
+    
+    const userData = userSnapshot.val();
+    
+    // Get wallet balance from CORRECT path
+    let balance = 0;
+    const walletRef = ref(db, `wallets/${uid}/balance`);
+    const walletSnapshot = await get(walletRef);
+    
+    if (walletSnapshot.exists()) {
+      balance = walletSnapshot.val();
+      console.log(`💰 Found balance in wallets/: $${balance}`);
+    }
+    
+    // Get game stats (any game)
+    const gameStats = userData.games?.['flappy-bird'] || {
+      highScore: 0,
+      totalGames: 0,
+      totalWins: 0,
+      totalLosses: 0,
+      winStreak: 0,
+      experience: 0,
+      achievements: []
+    };
+    
+    return {
+      username: userData.public?.username || username,
+      displayName: userData.public?.displayName || username,
+      avatar: userData.public?.avatar || 'default',
+      rank: userData.public?.globalRank || 'Bronze',
+      level: userData.public?.globalLevel || 1,
+      createdAt: userData.metadata?.createdAt || new Date().toISOString(),
+      highScore: gameStats.highScore || 0,
+      totalGames: gameStats.totalGames || 0,
+      totalWins: gameStats.totalWins || 0,
+      totalLosses: gameStats.totalLosses || 0,
+      winStreak: gameStats.winStreak || 0,
+      experience: gameStats.experience || 0,
+      achievements: gameStats.achievements || [],
+      balance: balance,  // This will now be 1945
+      totalDeposited: userData.wallet?.totalDeposited || 0,
+      totalWithdrawn: userData.wallet?.totalWithdrawn || 0,
+      totalWon: userData.wallet?.totalWon || 0,
+      totalLost: userData.wallet?.totalLost || 0,
+      totalBonus: userData.wallet?.totalBonus || 0,
+      lastLogin: userData.private?.lastLogin || new Date().toISOString(),
+      isActive: userData.public?.isOnline || false
+    };
     
   } catch (error) {
     console.error('❌ Error fetching user data:', error);
     return getDefaultUserData(username);
+  }
+}
+
+// Also fix updateWalletBalance and any other functions that use lookup
+export async function updateWalletBalance(
+  username: string, 
+  amount: number, 
+  type: 'bonus' | 'deposit' | 'withdrawal' | 'win' | 'loss',
+  description: string
+): Promise<boolean> {
+  try {
+    console.log(`💰 Updating wallet for ${username}: ${amount}`);
+    
+    // FIXED: Use byUsername, not byDisplayName
+    const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
+    const lookupSnapshot = await get(lookupRef);
+    
+    if (!lookupSnapshot.exists()) {
+      console.error('❌ User not found in lookup');
+      return false;
+    }
+    
+    const uid = lookupSnapshot.val();
+    
+    // Update the CORRECT wallet path
+    const walletRef = ref(db, `wallets/${uid}`);
+    const walletSnapshot = await get(walletRef);
+    
+    let currentBalance = 0;
+    let currentWalletData = {};
+    
+    if (walletSnapshot.exists()) {
+      currentWalletData = walletSnapshot.val();
+      currentBalance = currentWalletData.balance || 0;
+    } else {
+      currentWalletData = {
+        balance: 0,
+        totalDeposited: 0,
+        totalWithdrawn: 0,
+        totalWon: 0,
+        totalLost: 0,
+        totalBonus: 0,
+        currency: 'USD',
+        isActive: true
+      };
+    }
+    
+    const newBalance = currentBalance + amount;
+    
+    if (newBalance < 0) {
+      console.log('❌ Insufficient funds');
+      return false;
+    }
+    
+    await set(ref(db, `wallets/${uid}`), {
+      ...currentWalletData,
+      balance: newBalance,
+      lastUpdated: new Date().toISOString()
+    });
+    
+    // Also update old location
+    await set(ref(db, `users/${uid}/wallet/balance`), newBalance);
+    
+    // Create transaction record
+    const transactionsRef = ref(db, `transactions/${uid}`);
+    const newTransactionRef = push(transactionsRef);
+    await set(newTransactionRef, {
+      type,
+      amount,
+      balance: newBalance,
+      description,
+      timestamp: new Date().toISOString()
+    });
+    
+    console.log('✅ Wallet updated successfully. New balance:', newBalance);
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Error updating wallet:', error);
+    return false;
+  }
+}
+
+// Fix saveGameScore too
+export async function saveGameScore(
+  username: string,
+  score: number,
+  won: boolean
+): Promise<boolean> {
+  try {
+    console.log(`💾 Saving score for ${username}: ${score}`);
+    
+    // FIXED: Use byUsername
+    const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
+    const lookupSnapshot = await get(lookupRef);
+    
+    if (!lookupSnapshot.exists()) {
+      console.error('❌ User not found in lookup');
+      return false;
+    }
+    
+    const uid = lookupSnapshot.val();
+    const timestamp = Date.now();
+    const date = new Date(timestamp).toISOString();
+    
+    const scoreEntry = {
+      score: score,
+      won: won,
+      timestamp: timestamp,
+      date: date
+    };
+    
+    const scoresRef = ref(db, `users/${uid}/scores`);
+    const newScoreRef = push(scoresRef);
+    await set(newScoreRef, scoreEntry);
+    
+    console.log('✅ Score saved with ID:', newScoreRef.key);
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Error saving score:', error);
+    return false;
   }
 }
 /**
@@ -220,48 +331,7 @@ export interface ScoreEntry {
 /**
  * Save a game score to the database
  */
-export async function saveGameScore(
-  username: string,
-  score: number,
-  won: boolean
-): Promise<boolean> {
-  try {
-    console.log(`💾 Saving score for ${username}: ${score}`);
-    
-    // Get user UID from lookup
-    const lookupRef = ref(db, `lookups/byDisplayName/${username}`);
-    const lookupSnapshot = await get(lookupRef);
-    
-    if (!lookupSnapshot.exists()) {
-      console.error('❌ User not found in lookup');
-      return false;
-    }
-    
-    const uid = lookupSnapshot.val();
-    const timestamp = Date.now();
-    const date = new Date(timestamp).toISOString();
-    
-    // Create score entry
-    const scoreEntry = {
-      score: score,
-      won: won,
-      timestamp: timestamp,
-      date: date
-    };
-    
-    // Save to user's scores list
-    const scoresRef = ref(db, `users/${uid}/scores`);
-    const newScoreRef = push(scoresRef);
-    await set(newScoreRef, scoreEntry);
-    
-    console.log('✅ Score saved with ID:', newScoreRef.key);
-    return true;
-    
-  } catch (error) {
-    console.error('❌ Error saving score:', error);
-    return false;
-  }
-}
+
 
 /**
  * Get user's game history/scores
@@ -312,66 +382,7 @@ export async function getUserScores(username: string, limit: number = 10): Promi
     return [];
   }
 }
-export async function updateWalletBalance(
-  username: string, 
-  amount: number, 
-  type: 'bonus' | 'deposit' | 'withdrawal' | 'win' | 'loss',
-  description: string
-): Promise<boolean> {
-  try {
-    console.log(`💰 Updating wallet for ${username}: ${amount}`);
-    
-    // First get the user's UID from lookup
-    const lookupRef = ref(db, `lookups/byDisplayName/${username}`);
-    const lookupSnapshot = await get(lookupRef);
-    
-    if (!lookupSnapshot.exists()) {
-      console.error('❌ User not found in lookup');
-      return false;
-    }
-    
-    const uid = lookupSnapshot.val();
-    const walletRef = ref(db, `users/${uid}/wallet/balance`);
-    const walletSnapshot = await get(walletRef);
-    
-    if (!walletSnapshot.exists()) {
-      console.error('❌ Wallet not found');
-      return false;
-    }
-    
-    const currentBalance = walletSnapshot.val();
-    const newBalance = currentBalance + amount;
-    
-    if (newBalance < 0) {
-      console.log('❌ Insufficient funds');
-      return false;
-    }
-    
-    // Update balance
-    await set(walletRef, newBalance);
-    
-    // Update lastUpdated
-    await set(ref(db, `users/${uid}/wallet/lastUpdated`), new Date().toISOString());
-    
-    // Create transaction record
-    const transactionsRef = ref(db, `transactions/${uid}`);
-    const newTransactionRef = push(transactionsRef);
-    await set(newTransactionRef, {
-      type,
-      amount,
-      balance: newBalance,
-      description,
-      timestamp: new Date().toISOString()
-    });
-    
-    console.log('✅ Wallet updated successfully');
-    return true;
-    
-  } catch (error) {
-    console.error('❌ Error updating wallet:', error);
-    return false;
-  }
-}
+
 function getDefaultUserData(username: string): CompleteUserData {
   return {
     username: username,
@@ -403,16 +414,53 @@ function getDefaultUserData(username: string): CompleteUserData {
 /**
  * Get just wallet balance
  */
+// =========== WALLET FUNCTIONS (FIXED) ===========
+
+/**
+ * Get just wallet balance - FIXED to use wallets/ path
+ */
 export async function getUserBalance(username: string): Promise<number> {
   try {
-    const balanceRef = ref(db, `users/${username}/wallet/balance`);
+    console.log(`💰 Getting balance for: ${username}`);
+    
+    // First get the user's UID from lookup
+    const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
+    const lookupSnapshot = await get(lookupRef);
+    
+    if (!lookupSnapshot.exists()) {
+      console.log('❌ User not found in lookup');
+      return 10.00; // Default fallback
+    }
+    
+    const uid = lookupSnapshot.val();
+    
+    // ✅ FIXED: Use wallets/ path which has the correct balance
+    const balanceRef = ref(db, `wallets/${uid}/balance`);
     const snapshot = await get(balanceRef);
-    return snapshot.exists() ? snapshot.val() : 10.00;
+    
+    if (snapshot.exists()) {
+      const balance = snapshot.val();
+      console.log(`💰 Found balance in wallets/: $${balance}`);
+      return balance;
+    }
+    
+    // Fallback to old location
+    const oldBalanceRef = ref(db, `users/${uid}/wallet/balance`);
+    const oldSnapshot = await get(oldBalanceRef);
+    
+    if (oldSnapshot.exists()) {
+      console.log('⚠️ Using fallback balance from users path');
+      return oldSnapshot.val();
+    }
+    
+    return 10.00;
+    
   } catch (error) {
     console.error('Error getting balance:', error);
     return 10.00;
   }
 }
+
 
 /**
  * Get just high score

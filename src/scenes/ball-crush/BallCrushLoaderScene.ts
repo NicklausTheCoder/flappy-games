@@ -182,7 +182,7 @@ export class BallCrushLoaderScene extends Phaser.Scene {
     
     this.cameras.main.once('camerafadeoutcomplete', () => {
       console.log('🎯 Starting BallCrushStartScene with username:', this.username);
-      this.scene.start('BallCrushStartScene', { username: this.username });
+      this.scene.start('BallCrushGameScene', { username: this.username });
     });
   }
   
