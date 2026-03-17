@@ -29,18 +29,20 @@ export class CookieScene extends Phaser.Scene {
         RENEWAL_WINDOW: 5 * 60 * 1000            // Renew session if within 5 minutes of expiry
     };
 
-    // Game display names - ADD BALL CRUSH
+    // Game display names - ADDED CHECKERS
     private readonly GAME_NAMES: Record<string, string> = {
         'flappy-bird': 'Flappy Bird',
         'sky-shooter': 'Sky Shooter',
-        'ball-crush': 'Ball Crush'
+        'ball-crush': 'Ball Crush',
+        'checkers': 'Checkers'
     };
 
-    // Game loader mapping - ADD BALL CRUSH
+    // Game loader mapping - ADDED CHECKERS
     private readonly LOADER_MAP: Record<string, string> = {
         'flappy-bird': 'FlappyBirdLoaderScene',
         'sky-shooter': 'SkyShooterLoaderScene',
-        'ball-crush': 'BallCrushLoaderScene'
+        'ball-crush': 'BallCrushLoaderScene',
+        'checkers': 'CheckersLoaderScene'
     };
 
     constructor() {
@@ -83,7 +85,7 @@ export class CookieScene extends Phaser.Scene {
             this.startIdleTimer();
 
             // Route to the correct game loader
-            this.routeToGameLoader(gameId, userData.username);
+            this.routeToGameLoader(gameId, userData.username ,userData.uid);
 
         } else {
             console.log('❌ No user found in storage');
@@ -91,18 +93,27 @@ export class CookieScene extends Phaser.Scene {
         }
     }
 
-    private routeToGameLoader(gameId: string, username: string) {
-        console.log(`🚀 Routing to ${gameId} loader...`);
+    // In CookieScene.ts, add a flag:
+    private isRouting: boolean = false;
 
-        const loaderScene = this.LOADER_MAP[gameId];
+  private routeToGameLoader(gameId: string, username: string, uid?: string) {
+    console.log(`🚀 Routing to ${gameId} loader...`, { username, uid }); // Add this log
 
-        if (loaderScene) {
-            this.scene.start(loaderScene, { username: username });
-        } else {
-            console.warn(`No loader found for game: ${gameId}, defaulting to Flappy Bird`);
-            this.scene.start('FlappyBirdLoaderScene', { username: username });
-        }
+    const loaderScene = this.LOADER_MAP[gameId];
+
+    if (loaderScene) {
+        this.scene.start(loaderScene, { 
+            username: username,
+            uid: uid  // This is still coming through as undefined!
+        });
+    } else {
+        console.warn(`No loader found for game: ${gameId}, defaulting to Flappy Bird`);
+        this.scene.start('FlappyBirdLoaderScene', { 
+            username: username,
+            uid: uid
+        });
     }
+}
 
     private getUserFromStorage(): any | null {
         // PRIORITY 0: Check window.gameUser (set by main.ts from URL)
@@ -122,37 +133,38 @@ export class CookieScene extends Phaser.Scene {
         }
 
         // Priority 1: Check sessionStorage (cleared when browser closes)
+        // In the sessionStorage section (around line 130-140):
+        // In the sessionStorage section
         const sessionUser = sessionStorage.getItem('gameUser');
         if (sessionUser) {
             try {
                 const userData = JSON.parse(sessionUser);
                 console.log('📦 Found in sessionStorage:', userData);
 
-                // Check if this is a valid session
                 if (this.isValidSession(userData)) {
+                    // Make sure uid exists
+                    if (!userData.uid) {
+                        console.warn('⚠️ No uid in sessionStorage');
+                    }
                     return userData;
-                } else {
-                    console.log('❌ Invalid session data in sessionStorage');
-                    sessionStorage.removeItem('gameUser');
                 }
             } catch (e) {
                 console.error('Failed to parse sessionStorage data');
             }
         }
 
-        // Priority 2: Check localStorage (persists across browser sessions)
+        // Similar for localStorage
         const localUser = localStorage.getItem('gameUser');
         if (localUser) {
             try {
                 const userData = JSON.parse(localUser);
                 console.log('💾 Found in localStorage:', userData);
 
-                // Check if this is a valid session
                 if (this.isValidSession(userData)) {
+                    if (!userData.uid) {
+                        console.warn('⚠️ No uid in localStorage');
+                    }
                     return userData;
-                } else {
-                    console.log('❌ Invalid session data in localStorage');
-                    localStorage.removeItem('gameUser');
                 }
             } catch (e) {
                 console.error('Failed to parse localStorage data');
@@ -278,51 +290,53 @@ export class CookieScene extends Phaser.Scene {
     }
 
     private getUserFromUrl(): any | null {
-        const urlParams = new URLSearchParams(window.location.search);
-        const encryptedData = urlParams.get('user');
+    const urlParams = new URLSearchParams(window.location.search);
+    const encryptedData = urlParams.get('user');
 
-        if (encryptedData) {
-            console.log('🔗 Found encrypted data in URL:', encryptedData);
+    if (encryptedData) {
+        console.log('🔗 Found encrypted data in URL:', encryptedData);
 
-            try {
-                // Decrypt the data
-                const decrypted = this.decryptData(encryptedData);
-                console.log('🔓 Decrypted data:', decrypted);
+        try {
+            // Decrypt the data
+            const decrypted = this.decryptData(encryptedData);
+            console.log('🔓 Decrypted data:', decrypted);
 
-                if (decrypted && decrypted.username) {
-                    // Create user data with proper timestamps
-                    const userData = this.createUserData(
-                        decrypted.username,
-                        decrypted.rememberMe || false
-                    );
+            if (decrypted && decrypted.username) {
+                // Create user data with the UID from decrypted data
+                const userData = this.createUserData(
+                    decrypted.username,
+                    decrypted.rememberMe || false,
+                    decrypted.uid  // Pass the UID here!
+                );
 
-                    // Save to storage for future visits
-                    this.saveUserToStorage(userData, userData.rememberMe);
+                // Save to storage for future visits
+                this.saveUserToStorage(userData, userData.rememberMe);
 
-                    // Clean URL (remove the parameter)
-                    const cleanUrl = window.location.pathname;
-                    window.history.replaceState({}, document.title, cleanUrl);
+                // Clean URL (remove the parameter)
+                const cleanUrl = window.location.pathname;
+                window.history.replaceState({}, document.title, cleanUrl);
 
-                    return userData;
-                }
-            } catch (e) {
-                console.error('Failed to decrypt URL data:', e);
+                return userData;
             }
+        } catch (e) {
+            console.error('Failed to decrypt URL data:', e);
         }
-        return null;
     }
+    return null;
+}
 
-    private createUserData(username: string, rememberMe: boolean): any {
-        return {
-            username: username,
-            loginTime: Date.now(),
-            sessionId: Math.random().toString(36).substring(2, 15),
-            rememberMe: rememberMe,
-            createdAt: Date.now(),
-            lastActivity: Date.now(),
-            userAgent: navigator.userAgent
-        };
-    }
+ private createUserData(username: string, rememberMe: boolean, existingUid?: string): any {
+    return {
+        username: username,
+        uid: existingUid || `temp_${Date.now()}`, // Use existing UID if provided
+        loginTime: Date.now(),
+        sessionId: Math.random().toString(36).substring(2, 15),
+        rememberMe: rememberMe,
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+        userAgent: navigator.userAgent
+    };
+}
 
     private decryptData(encryptedData: string): any | null {
         try {
@@ -351,29 +365,28 @@ export class CookieScene extends Phaser.Scene {
         }
     }
 
-    private saveUserToStorage(userData: any, remember: boolean = true) {
-        // Add last updated timestamp
-        userData.lastUpdated = Date.now();
-
-        // Always save to sessionStorage
-        sessionStorage.setItem('gameUser', JSON.stringify(userData));
-
-        // If remember me is true, also save to localStorage
-        if (remember) {
-            localStorage.setItem('gameUser', JSON.stringify(userData));
-            console.log('💾 Saved to localStorage (remembered)');
-        } else {
-            // Clear any existing localStorage
-            localStorage.removeItem('gameUser');
-            console.log('📦 Saved to sessionStorage only');
-        }
-
-        console.log('📦 Session expires:', new Date(userData.loginTime +
-            (remember ?
-                this.SESSION_CONFIG.REMEMBER_ME_TIMEOUT :
-                this.SESSION_CONFIG.SESSION_TIMEOUT
-            )).toLocaleString());
+  private saveUserToStorage(userData: any, remember: boolean = true) {
+    // Make sure UID is included
+    if (!userData.uid) {
+        console.warn('⚠️ Attempting to save user without UID!');
     }
+    
+    // Add last updated timestamp
+    userData.lastUpdated = Date.now();
+
+    // Always save to sessionStorage
+    sessionStorage.setItem('gameUser', JSON.stringify(userData));
+
+    // If remember me is true, also save to localStorage
+    if (remember) {
+        localStorage.setItem('gameUser', JSON.stringify(userData));
+        console.log('💾 Saved to localStorage (remembered) with UID:', userData.uid);
+    } else {
+        // Clear any existing localStorage
+        localStorage.removeItem('gameUser');
+        console.log('📦 Saved to sessionStorage only with UID:', userData.uid);
+    }
+}
 
     private getCookie(name: string): string | null {
         const cookieString = document.cookie;
@@ -490,28 +503,26 @@ export class CookieScene extends Phaser.Scene {
             align: 'center'
         }).setOrigin(0.5);
     }
-    // Add this method to CookieScene.ts
-    private getUserFromWindow(): any | null {
-        // Check if window.gameUser exists (set by main.ts)
-        if (typeof window !== 'undefined' && (window as any).gameUser) {
-            const userData = (window as any).gameUser;
-            console.log('🪟 Found user data in window.gameUser:', userData);
+  private getUserFromWindow(): any | null {
+    if (typeof window !== 'undefined' && (window as any).gameUser) {
+        const userData = (window as any).gameUser;
+        console.log('🪟 Found user data in window.gameUser:', userData);
 
-            // Convert to the format expected by the app
-            if (userData.username) {
-                const formattedUser = this.createUserData(
-                    userData.username,
-                    userData.rememberMe || false
-                );
+        if (userData.username) {
+            // Pass the existing UID to createUserData
+            const formattedUser = this.createUserData(
+                userData.username,
+                userData.rememberMe || false,
+                userData.uid  // Pass the UID here!
+            );
 
-                // Add any additional fields from window.gameUser
-                if (userData.displayName) formattedUser.displayName = userData.displayName;
-                if (userData.uid) formattedUser.uid = userData.uid;
-                if (userData.email) formattedUser.email = userData.email;
+            // Add any additional fields
+            if (userData.displayName) formattedUser.displayName = userData.displayName;
+            if (userData.email) formattedUser.email = userData.email;
 
-                return formattedUser;
-            }
+            return formattedUser;
         }
-        return null;
     }
+    return null;
+}
 }

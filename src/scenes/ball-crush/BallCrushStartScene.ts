@@ -1,24 +1,29 @@
 ﻿// src/scenes/ball-crush/BallCrushStartScene.ts
 import Phaser from 'phaser';
 import {
-  getUserData,
-  getLeaderboard,
-  getPlayerRank,
-  updateWalletBalance,
-  CompleteUserData,
-  LeaderboardEntry
-} from '../../firebase/simple';
+  getBallCrushUserData,
+  getBallCrushLeaderboard,
+  getBallCrushPlayerRank,
+  updateBallCrushWalletBalance,
+  BallCrushUserData,
+  getBallCrushBalance,
+  BallCrushLeaderboardEntry
+
+} from '../../firebase/ballCrushSimple';  // Use the new Ball Crush specific service
 
 export class BallCrushStartScene extends Phaser.Scene {
-  // Receive username from LoaderScene
   private username: string = '';
+  private uid: string = '';  // Add uid
 
-  // Then we fetch ALL this data ourselves
-  private userData: CompleteUserData | null = null;
-  private leaderboard: LeaderboardEntry[] = [];
+  private userData: BallCrushUserData | null = null;
+  private leaderboard: BallCrushLeaderboardEntry[] = [];
   private playerRank: number = 0;
+  private balance: number = 0;
+  private displayName: string = '';
+  private avatar: string = '';
 
   // UI Elements
+
   private balanceText!: Phaser.GameObjects.Text;
   private highScoreText!: Phaser.GameObjects.Text;
   private rankText!: Phaser.GameObjects.Text;
@@ -32,8 +37,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     super({ key: 'BallCrushStartScene' });
   }
 
-  // RECEIVE USERNAME FROM LOADERSCENE
-  init(data: { username: string }) {
+  init(data: { username: string; uid?: string; displayName?: string; avatar?: string }) {
     console.log('📥 BallCrushStartScene received:', data);
 
     if (!data || !data.username) {
@@ -43,9 +47,15 @@ export class BallCrushStartScene extends Phaser.Scene {
     }
 
     this.username = data.username;
-    console.log('👤 Username set to:', this.username);
-  }
+    this.uid = data.uid || '';                    // Store the uid!
+    this.displayName = data.displayName || data.username;
+    this.avatar = data.avatar || 'default';
 
+    console.log('👤 Username set to:', this.username);
+    console.log('🆔 UID set to:', this.uid);
+    console.log('📛 DisplayName set to:', this.displayName);
+    console.log('🖼️ Avatar set to:', this.avatar);
+  }
   async create() {
     console.log('🎨 Creating BallCrushStartScene for:', this.username);
 
@@ -63,7 +73,7 @@ export class BallCrushStartScene extends Phaser.Scene {
   }
 
   private showLoading() {
-    this.loadingText = this.add.text(180, 300, `LOADING DATA...`, {
+    this.loadingText = this.add.text(180, 300, `LOADING BALL CRUSH DATA...`, {
       fontSize: '18px',
       color: '#ffff00'
     }).setOrigin(0.5);
@@ -72,18 +82,15 @@ export class BallCrushStartScene extends Phaser.Scene {
   private showError(message: string) {
     this.loadingText?.destroy();
 
-    // Dark overlay
     const overlay = this.add.graphics();
     overlay.fillStyle(0x000000, 0.9);
     overlay.fillRect(0, 0, 360, 640);
 
-    // Error icon
     this.add.text(180, 200, '❌', {
       fontSize: '48px',
       color: '#ff0000'
     }).setOrigin(0.5);
 
-    // Error message
     this.errorText = this.add.text(180, 260, message, {
       fontSize: '18px',
       color: '#ffffff',
@@ -92,7 +99,6 @@ export class BallCrushStartScene extends Phaser.Scene {
       wordWrap: { width: 300 }
     }).setOrigin(0.5);
 
-    // Retry button
     this.retryButton = this.add.text(180, 330, '🔄 TRY AGAIN', {
       fontSize: '20px',
       color: '#ffffff',
@@ -102,27 +108,9 @@ export class BallCrushStartScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
 
-    this.retryButton.on('pointerover', () => {
-      this.retryButton.setStyle({ color: '#ffff00', backgroundColor: '#45a049' });
-    });
-
-    this.retryButton.on('pointerout', () => {
-      this.retryButton.setStyle({ color: '#ffffff', backgroundColor: '#4CAF50' });
-    });
-
     this.retryButton.on('pointerdown', () => {
-      this.scene.restart();
+      this.scene.restart({ username: this.username, uid: this.uid });
     });
-  }
-
-  private debugShowData() {
-    if (!this.userData) return;
-
-    // Show raw data for debugging
-    this.add.text(180, 550, `Debug: HS=${this.userData.highScore} Bal=${this.userData.balance}`, {
-      fontSize: '10px',
-      color: '#ff0000'
-    }).setOrigin(0.5);
   }
 
   private showErrorAndRedirect(message: string) {
@@ -142,24 +130,25 @@ export class BallCrushStartScene extends Phaser.Scene {
       color: '#ffffff'
     }).setOrigin(0.5);
 
-    this.add.text(180, 370, 'Redirecting to login...', {
+    this.add.text(180, 370, 'Returning to login...', {
       fontSize: '14px',
       color: '#ffff00'
     }).setOrigin(0.5);
 
+    // Go to CookieScene instead of direct window.location
     setTimeout(() => {
-      window.location.href = '/login';
+      this.scene.start('CookieScene');
     }, 2000);
   }
 
   private async fetchAllUserData() {
-    console.log('📡 Fetching data for:', this.username);
+    console.log('📡 Fetching Ball Crush data for:', this.username);
 
-    // Use Promise.all to fetch all data in parallel - EXACTLY like FlappyBird
-    const [userData, leaderboard, rank] = await Promise.all([
-      getUserData(this.username),
-      getLeaderboard(10),
-      getPlayerRank(this.username)
+    const [userData, leaderboard, rank, balance] = await Promise.all([
+      getBallCrushUserData(this.username),
+      getBallCrushLeaderboard(10),
+      getBallCrushPlayerRank(this.username),
+      getBallCrushBalance(this.uid)
     ]);
 
     if (!userData) {
@@ -169,19 +158,35 @@ export class BallCrushStartScene extends Phaser.Scene {
     this.userData = userData;
     this.leaderboard = leaderboard;
     this.playerRank = rank;
+    this.balance = balance;
 
-    // DEBUG: Log what we got
-    console.log('✅ User data fetched:', {
+    console.log('✅ Ball Crush user data fetched:', {
       username: this.userData.username,
       displayName: this.userData.displayName,
       highScore: this.userData.highScore,
-      balance: this.userData.balance,
+      balance: this.balance,
       totalGames: this.userData.totalGames,
-      level: this.userData.level,
-      rank: this.userData.rank
     });
   }
+  // private async fetchUserBalance() {
+  //   console.log('📡 Fetching Ball balance data for:', this.uid);
 
+  //   // This returns a NUMBER, not an object with userData
+  //   const balance = await getBallCrushBalance(this.uid);
+
+  //   console.log('✅ Ball Crush balance fetched:', balance);
+
+  //   // Store it somewhere - you need a variable for this
+  //   // Add this at the top of your class:
+  //   // private userBalance: number = 0;
+
+  //   this.userBalance = balance;
+
+  //   // Update the balance display if it exists
+  //   if (this.balanceText) {
+  //     this.balanceText.setText(balance.toFixed(0));
+  //   }
+  // }
   private buildFullUI() {
     if (!this.userData) return;
 
@@ -194,7 +199,6 @@ export class BallCrushStartScene extends Phaser.Scene {
     this.createMenuButtons();
     this.addFooter();
     this.setupInputHandlers();
-    this.debugShowData();
   }
 
   private addBackground() {
@@ -222,7 +226,6 @@ export class BallCrushStartScene extends Phaser.Scene {
     this.ballSprite = this.add.sprite(180, 150, 'ball');
     this.ballSprite.setScale(0.3);
 
-    // Add a bouncing animation
     this.tweens.add({
       targets: this.ballSprite,
       y: 140,
@@ -232,7 +235,6 @@ export class BallCrushStartScene extends Phaser.Scene {
       ease: 'Sine.easeInOut'
     });
 
-    // Add a slight rotation animation
     this.tweens.add({
       targets: this.ballSprite,
       angle: 10,
@@ -243,26 +245,29 @@ export class BallCrushStartScene extends Phaser.Scene {
   }
 
   private createWelcomeMessage() {
-    this.add.text(180, 200, `Welcome, ${this.userData!.displayName}!`, {
+    if (!this.userData) return;
+
+    this.add.text(180, 200, `Welcome, ${this.userData.displayName}!`, {
       fontSize: '16px',
       color: '#ffff00',
       stroke: '#000000',
       strokeThickness: 2
     }).setOrigin(0.5);
 
-    this.add.text(180, 220, `${this.userData!.rank} • Level ${this.userData!.level}`, {
+    this.add.text(180, 220, `${this.userData.rank} • Level ${this.userData.level}`, {
       fontSize: '14px',
       color: '#ffffff'
     }).setOrigin(0.5);
 
-    this.add.text(180, 240, `Wins: ${this.userData!.totalWins} | Streak: ${this.userData!.winStreak}`, {
+    this.add.text(180, 240, `Wins: ${this.userData.totalWins} | Streak: ${this.userData.winStreak}`, {
       fontSize: '12px',
       color: '#ffffff'
     }).setOrigin(0.5);
   }
 
   private createBalanceDisplay() {
-    // Balance box (top left)
+    if (!this.userData) return;
+
     const bg = this.add.graphics();
     bg.fillStyle(0x000000, 0.7);
     bg.fillRoundedRect(5, 5, 110, 40, 8);
@@ -272,7 +277,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     this.add.text(10, 8, '💰', { fontSize: '20px' });
     this.add.text(35, 8, 'Bal:', { fontSize: '12px', color: '#ffffff' });
 
-    this.balanceText = this.add.text(35, 23, `${this.userData!.balance.toFixed(0)}`, {
+    this.balanceText = this.add.text(35, 23, `${this.balance.toFixed(0)}`, {
       fontSize: '14px',
       color: '#00ff00',
       fontStyle: 'bold'
@@ -282,7 +287,6 @@ export class BallCrushStartScene extends Phaser.Scene {
   private createHighScoreDisplay() {
     if (!this.userData) return;
 
-    // High score box (top right)
     const bg = this.add.graphics();
     bg.fillStyle(0x000000, 0.7);
     bg.fillRoundedRect(245, 5, 110, 40, 8);
@@ -293,7 +297,6 @@ export class BallCrushStartScene extends Phaser.Scene {
     this.add.text(275, 8, 'Best:', { fontSize: '12px', color: '#ffffff' });
 
     const highScore = this.userData.highScore || 0;
-
     this.highScoreText = this.add.text(275, 23, highScore.toString(), {
       fontSize: '14px',
       color: '#ffaa00',
@@ -302,7 +305,6 @@ export class BallCrushStartScene extends Phaser.Scene {
   }
 
   private createRankDisplay() {
-    // Rank box (top middle)
     const bg = this.add.graphics();
     bg.fillStyle(0x000000, 0.7);
     bg.fillRoundedRect(125, 5, 110, 40, 8);
@@ -320,13 +322,15 @@ export class BallCrushStartScene extends Phaser.Scene {
   }
 
   private createMenuButtons() {
+    if (!this.userData) return;
+
     const buttonWidth = 160;
     const buttonHeight = 45;
     const startX = 180;
     const startY = 280;
 
     const buttons = [
-      { text: '⚽ PLAY GAME', color: '#4CAF50', scene: 'BallCrushGameScene' },
+      { text: '⚽ PLAY BALL', color: '#4CAF50', scene: 'BallCrushMatchmakingScene' },
       { text: '🏆 LEADERBOARD', color: '#2196F3', scene: 'BallCrushLeaderboardScene' },
       { text: '👤 PROFILE', color: '#9C27B0', scene: 'BallCrushProfileScene' },
       { text: '📊 MY SCORES', color: '#FF9800', scene: 'BallCrushScoresScene' },
@@ -374,7 +378,8 @@ export class BallCrushStartScene extends Phaser.Scene {
         bg.strokeRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
       });
 
-      if (btn.text === '⚽ PLAY GAME') {
+      // Look for this section:
+      if (btn.text === '⚽ PLAY BALL') {
         button.on('pointerdown', async () => {
           if (this.userData!.balance < 1) {
             this.showInsufficientFunds();
@@ -394,13 +399,37 @@ export class BallCrushStartScene extends Phaser.Scene {
               duration: 200,
               yoyo: true,
               onComplete: () => {
-                this.scene.start(btn.scene, { userData: this.userData });
+                // CRITICAL: Check what data we have right now
+                console.log('🔍 Current data in StartScene:', {
+                  username: this.userData!.username,
+                  uid: this.uid,
+                  displayName: this.userData!.displayName,
+                  avatar: this.userData!.avatar,
+                  userDataExists: !!this.userData,
+                  uidExists: !!this.uid
+                });
+
+                // Try to start the scene
+                console.log('🚀 Attempting to start MatchmakingScene...');
+
+                this.scene.start('BallCrushMatchmakingScene', {
+                  username: this.userData!.username,
+                  uid: this.uid,
+                  displayName: this.userData!.displayName,
+                  avatar: this.userData!.avatar
+                });
+
+                // Add a small delay and check if we're still here (scene didn't change)
+                setTimeout(() => {
+                  console.log('⚠️ Still in StartScene after 1 second - scene transition may have failed');
+                }, 1000);
               }
             });
           } else {
             this.showError('Failed to process payment');
           }
         });
+
       } else {
         button.on('pointerdown', () => {
           this.scene.start(btn.scene, { userData: this.userData });
@@ -412,22 +441,17 @@ export class BallCrushStartScene extends Phaser.Scene {
   }
 
   private async deductGameFee(): Promise<boolean> {
-    try {
-      console.log('💰 Deducting 1 coin game fee for:', this.userData!.username);
+    if (!this.userData || !this.uid) return false;
 
-      // Use the SAME updateWalletBalance function as FlappyBird
-      const success = await updateWalletBalance(
-        this.userData!.username,
+    try {
+      console.log('💰 Deducting 1 coin game fee for UID:', this.uid);
+
+      const success = await updateBallCrushWalletBalance(
+        this.uid,  // Pass UID instead of username
         -1,
         'loss',
         'Ball Crush game entry fee'
       );
-
-      if (success) {
-        console.log('✅ Game fee deducted successfully');
-      } else {
-        console.log('❌ Failed to deduct game fee');
-      }
 
       return success;
 
@@ -438,24 +462,25 @@ export class BallCrushStartScene extends Phaser.Scene {
   }
 
   private showInsufficientFunds() {
+    // Create a container for the popup
     const popup = this.add.graphics();
     popup.fillStyle(0x000000, 0.9);
     popup.fillRoundedRect(40, 200, 280, 150, 10);
     popup.lineStyle(2, 0xff0000, 1);
     popup.strokeRoundedRect(40, 200, 280, 150, 10);
 
-    this.add.text(180, 230, '⚠️', {
+    const warningIcon = this.add.text(180, 230, '⚠️', {
       fontSize: '40px',
       color: '#ff0000'
     }).setOrigin(0.5);
 
-    this.add.text(180, 280, 'Insufficient Coins!', {
+    const warningText = this.add.text(180, 280, 'Insufficient Coins!', {
       fontSize: '18px',
       color: '#ffffff',
       fontStyle: 'bold'
     }).setOrigin(0.5);
 
-    this.add.text(180, 310, 'Need 1 coin to play', {
+    const subText = this.add.text(180, 310, 'Need 1 coin to play', {
       fontSize: '14px',
       color: '#ffff00'
     }).setOrigin(0.5);
@@ -469,34 +494,50 @@ export class BallCrushStartScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
 
-    closeBtn.on('pointerdown', () => {
+    // Function to destroy all popup elements
+    const destroyPopup = () => {
       popup.destroy();
+      warningIcon.destroy();
+      warningText.destroy();
+      subText.destroy();
       closeBtn.destroy();
-    });
+    };
 
-    this.time.delayedCall(2000, () => {
-      popup.destroy();
-      closeBtn.destroy();
-    });
+    closeBtn.on('pointerdown', destroyPopup);
+
+    // Auto close after 3 seconds (increased from 2)
+    this.time.delayedCall(3000, destroyPopup);
   }
 
   private addFooter() {
-    this.add.text(340, 620, 'v1.0.0', {
+    this.add.text(340, 620, 'Ball Crush v1.0.0', {
       fontSize: '10px',
       color: '#666666'
     }).setOrigin(1, 0);
   }
 
   private setupInputHandlers() {
+    if (!this.userData) return;
+
     if (this.input.keyboard) {
       this.input.keyboard.on('keydown-ENTER', () => {
         if (this.userData && this.userData.balance >= 1) {
-          this.scene.start('BallCrushGameScene', { userData: this.userData });
+          this.scene.start('BallCrushMatchmakingScene', {
+            username: this.userData.username,
+            uid: this.uid,
+            displayName: this.userData.displayName,
+            avatar: this.userData.avatar
+          });
         }
       });
       this.input.keyboard.on('keydown-SPACE', () => {
         if (this.userData && this.userData.balance >= 1) {
-          this.scene.start('BallCrushGameScene', { userData: this.userData });
+          this.scene.start('BallCrushMatchmakingScene', {
+            username: this.userData.username,
+            uid: this.uid,
+            displayName: this.userData.displayName,
+            avatar: this.userData.avatar
+          });
         }
       });
     }

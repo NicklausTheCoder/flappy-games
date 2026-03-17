@@ -6,20 +6,23 @@ export class FlappyBirdLoaderScene extends Phaser.Scene {
   private loadingAngle: number = 0;
   private loadingText!: Phaser.GameObjects.Text;
   
-  // Username received from CookieScene
+  // User data received from CookieScene
   private username: string = '';
+  private uid: string = '';  // Add UID storage
   
   constructor() {
     super({ key: 'FlappyBirdLoaderScene' });
   }
   
-  init(data: { username: string }) {
+  init(data: { username: string; uid?: string }) {
     console.log('🎬 LoaderScene initialized with data:', data);
     
-    // Get username from CookieScene
+    // Get username and UID from CookieScene
     if (data && data.username) {
       this.username = data.username;
+      this.uid = data.uid || '';  // Store the UID
       console.log('👤 Username received from CookieScene:', this.username);
+      console.log('🆔 UID received from CookieScene:', this.uid);
     } else {
       console.error('❌ No username received!');
       // Fallback - go back to CookieScene
@@ -103,6 +106,7 @@ export class FlappyBirdLoaderScene extends Phaser.Scene {
   
   private goToNextScene() {
     console.log('🚀 Moving to StartScene with username:', this.username);
+    console.log('🆔 With UID:', this.uid);
     
     this.loadingText.setText('COMPLETE!');
     this.loadingText.setColor('#00ff00');
@@ -114,8 +118,13 @@ export class FlappyBirdLoaderScene extends Phaser.Scene {
       
       this.cameras.main.once('camerafadeoutcomplete', () => {
         console.log('🎯 Starting StartScene with username:', this.username);
-        // PASS THE USERNAME to StartScene
-        this.scene.start('FlappyBirdStartScene', { username: this.username });
+        console.log('🆔 Passing UID:', this.uid);
+        
+        // PASS BOTH USERNAME AND UID to StartScene
+        this.scene.start('FlappyBirdStartScene', { 
+          username: this.username,
+          uid: this.uid 
+        });
       });
     });
   }

@@ -1,4 +1,3 @@
-// src/services/firebase/multiGameQueries.ts
 import {
   ref,
   get,

@@ -18,18 +18,6 @@ export class BallCrushGameScene extends Phaser.Scene {
   private opponentHealthBars: Phaser.GameObjects.Image[] = [];
   private scoreText!: Phaser.GameObjects.Text;
   
-  // FPS Counter
-  private fpsText!: Phaser.GameObjects.Text;
-  private pingText!: Phaser.GameObjects.Text;
-  private lastFpsUpdate: number = 0;
-  private framesThisSecond: number = 0;
-  private currentFps: number = 0;
-  
-  // Ping measurement
-  private pingStartTime: number = 0;
-  private currentPing: number = 0;
-  private pingInterval: number = 2000; // Check ping every 2 seconds
-  
   // Game state
   private gameActive: boolean = true;
   private ballSpeed: number = 200;
@@ -38,23 +26,15 @@ export class BallCrushGameScene extends Phaser.Scene {
   // Network
   private isOnline: boolean = true;
   private isHost: boolean = false;
-  private isPlayer1: boolean = false;
+  private isPlayer1: boolean = false; // true = bottom paddle, false = top paddle
   private unsubscribeLobby: (() => void) | null = null;
   private unsubscribeBall: (() => void) | null = null;
   private lastSentPosition: number = 0;
-  private sendRate: number = 30; // Send position ~33 times per second (optimized)
-  
-  // Prediction variables for opponent movement
-  private lastOpponentX: number = 180;
-  private opponentVelocity: number = 0;
-  private lastUpdateTime: number = 0;
+  private sendRate: number = 50;
   
   // Controls
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private moveSpeed: number = 5;
-  
-  // Add this flag to prevent double initialization
-  private static isInitializing: boolean = false;
   
   constructor() {
     super({ key: 'BallCrushGameScene' });
@@ -62,20 +42,12 @@ export class BallCrushGameScene extends Phaser.Scene {
   }
   
   init(data: { username: string; uid: string; lobbyId: string }) {
-    // Prevent double initialization
-    if (BallCrushGameScene.isInitializing) {
-      console.log('⚠️ BallCrushGameScene already initializing, skipping...');
-      return;
-    }
-    
-    BallCrushGameScene.isInitializing = true;
-    
     this.username = data.username || 'Player';
     this.uid = data.uid || '';
     this.lobbyId = data.lobbyId || '';
     
     console.log('⚽ BallCrushGameScene started for:', this.username);
-    console.log('📡 Online mode: true Lobby:', this.lobbyId);
+    console.log('📡 Online mode: true Host:', this.isHost, 'Lobby:', this.lobbyId);
   }
   
   async create() {
@@ -84,7 +56,7 @@ export class BallCrushGameScene extends Phaser.Scene {
     
     if (!this.lobby) {
       console.error('❌ No lobby data found');
-      this.scene.start('CookieScene', { username: this.username, uid: this.uid });
+      this.scene.start('BallCrushStartScene', { username: this.username, uid: this.uid });
       return;
     }
     
@@ -135,102 +107,6 @@ export class BallCrushGameScene extends Phaser.Scene {
       console.log('🎯 Host setting initial ball direction');
       this.setInitialBallDirection();
     }
-    
-    this.lastUpdateTime = time;
-    
-    // Start ping measurement
-    this.startPingMeasurement();
-  }
-  
-  private createUI() {
-    // Health bars for player (always green)
-    const playerStartX = 80;
-    for (let i = 0; i < 5; i++) {
-      const healthBar = this.add.image(playerStartX + (i * 40), this.isPlayer1 ? 620 : 20, 'ball');
-      healthBar.setScale(0.1);
-      healthBar.setTint(0x00ff00);
-      this.playerHealthBars.push(healthBar);
-    }
-    
-    // Health bars for opponent (always red)
-    const opponentStartX = 80;
-    for (let i = 0; i < 5; i++) {
-      const healthBar = this.add.image(opponentStartX + (i * 40), this.isPlayer1 ? 20 : 620, 'ball');
-      healthBar.setScale(0.1);
-      healthBar.setTint(0xff0000);
-      this.opponentHealthBars.push(healthBar);
-    }
-    
-    // Score in middle
-    this.scoreText = this.add.text(180, 300, '0 - 0', {
-      fontSize: '24px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
-    }).setOrigin(0.5);
-    
-    // Instructions
-    this.add.text(180, 560, 'Move with ← → arrows or touch', {
-      fontSize: '12px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-    
-    // FPS Counter (top left)
-    this.fpsText = this.add.text(10, 10, 'FPS: 0', {
-      fontSize: '14px',
-      color: '#00ff00',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 2
-    });
-    
-    // Ping Counter (top right)
-    this.pingText = this.add.text(280, 10, 'Ping: 0ms', {
-      fontSize: '14px',
-      color: '#ffff00',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 2
-    });
-  }
-  
-  private startPingMeasurement() {
-    // Measure ping by writing a timestamp to Firebase and reading it back
-    const pingRef = ref(db, `pings/${this.lobbyId}/${this.uid}`);
-    
-    setInterval(() => {
-      if (!this.gameActive) return;
-      
-      this.pingStartTime = Date.now();
-      set(pingRef, {
-        timestamp: this.pingStartTime,
-        sender: this.uid
-      });
-    }, this.pingInterval);
-    
-    // Listen for our own ping to come back
-    onValue(pingRef, (snapshot) => {
-      if (snapshot.exists() && this.pingStartTime > 0) {
-        const data = snapshot.val();
-        if (data.sender === this.uid) {
-          const receiveTime = Date.now();
-          this.currentPing = receiveTime - data.timestamp;
-          this.pingText.setText(`Ping: ${this.currentPing}ms`);
-          
-          // Color code ping
-          if (this.currentPing < 50) {
-            this.pingText.setColor('#00ff00'); // Green - good
-          } else if (this.currentPing < 100) {
-            this.pingText.setColor('#ffff00'); // Yellow - okay
-          } else if (this.currentPing < 200) {
-            this.pingText.setColor('#ff9900'); // Orange - slow
-          } else {
-            this.pingText.setColor('#ff0000'); // Red - bad
-          }
-        }
-      }
-    });
   }
   
   private async getLobbyData() {
@@ -255,21 +131,18 @@ export class BallCrushGameScene extends Phaser.Scene {
       return;
     }
     
-    // Always create both paddles
-    // Bottom paddle (Player 1)
-    const bottomPaddle = this.physics.add.image(180, 550, 'player');
-    bottomPaddle.setScale(0.15);
-    
-    // Top paddle (Player 2)
-    const topPaddle = this.physics.add.image(180, 50, 'player');
-    topPaddle.setScale(0.15);
-    topPaddle.setFlipY(true);
-    
-    // Assign based on player role
     if (this.isPlayer1) {
-      // I am Player 1 - I control bottom paddle
-      this.playerPaddle = bottomPaddle;
-      this.opponentPaddle = topPaddle;
+      // I am Player 1 (bottom paddle)
+      console.log('🏓 Creating bottom paddle for Player 1');
+      
+      // My paddle (bottom)
+      this.playerPaddle = this.physics.add.image(180, 550, 'player');
+      this.playerPaddle.setScale(0.15);
+      
+      // Opponent paddle (top)
+      this.opponentPaddle = this.physics.add.image(180, 50, 'player');
+      this.opponentPaddle.setScale(0.15);
+      this.opponentPaddle.setFlipY(true);
       
       // Names
       this.add.text(180, 590, 'YOU', {
@@ -287,11 +160,19 @@ export class BallCrushGameScene extends Phaser.Scene {
       }).setOrigin(0.5);
       
     } else {
-      // I am Player 2 - I control top paddle
-      this.playerPaddle = topPaddle;
-      this.opponentPaddle = bottomPaddle;
+      // I am Player 2 (top paddle) - roles reversed!
+      console.log('🏓 Creating top paddle for Player 2');
       
-      // Names
+      // My paddle (top - flipped)
+      this.playerPaddle = this.physics.add.image(180, 50, 'player');
+      this.playerPaddle.setScale(0.15);
+      this.playerPaddle.setFlipY(true);
+      
+      // Opponent paddle (bottom)
+      this.opponentPaddle = this.physics.add.image(180, 550, 'player');
+      this.opponentPaddle.setScale(0.15);
+      
+      // Names (reversed)
       this.add.text(180, 30, 'YOU', {
         fontSize: '14px',
         color: '#ffffff',
@@ -301,13 +182,13 @@ export class BallCrushGameScene extends Phaser.Scene {
       
       this.add.text(180, 590, opponentData.displayName, {
         fontSize: '12px',
-        color: '#44ff44',
+        color: '#44ff44', // Green for opponent
         stroke: '#000000',
         strokeThickness: 2
       }).setOrigin(0.5);
     }
     
-    // Configure physics bodies for both paddles
+    // Configure physics bodies
     const playerBody = this.playerPaddle.body as Phaser.Physics.Arcade.Body;
     playerBody.setSize(40, 20);
     playerBody.setCollideWorldBounds(true);
@@ -321,7 +202,6 @@ export class BallCrushGameScene extends Phaser.Scene {
     // Set initial positions from lobby
     this.playerPaddle.x = myData.position.x;
     this.opponentPaddle.x = opponentData.position.x;
-    this.lastOpponentX = opponentData.position.x;
   }
   
   private createBall() {
@@ -351,6 +231,42 @@ export class BallCrushGameScene extends Phaser.Scene {
       follow: this.ball,
       tint: 0xffaa00
     });
+  }
+  
+  private createUI() {
+    if (this.isPlayer1) {
+      // Player 1: Health at bottom, Opponent health at top
+      this.createHealthBars(80, 620, 0x00ff00, this.playerHealthBars); // Player health bottom
+      this.createHealthBars(80, 20, 0xff0000, this.opponentHealthBars); // Opponent health top
+    } else {
+      // Player 2: Health at top, Opponent health at bottom
+      this.createHealthBars(80, 20, 0x00ff00, this.playerHealthBars); // Player health top
+      this.createHealthBars(80, 620, 0xff0000, this.opponentHealthBars); // Opponent health bottom
+    }
+    
+    // Score in middle
+    this.scoreText = this.add.text(180, 300, '0 - 0', {
+      fontSize: '24px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 4
+    }).setOrigin(0.5);
+    
+    // Instructions
+    this.add.text(180, 560, 'Move with ← → arrows or touch', {
+      fontSize: '12px',
+      color: '#ffffff'
+    }).setOrigin(0.5);
+  }
+  
+  private createHealthBars(startX: number, y: number, color: number, barsArray: Phaser.GameObjects.Image[]) {
+    for (let i = 0; i < 5; i++) {
+      const healthBar = this.add.image(startX + (i * 40), y, 'ball');
+      healthBar.setScale(0.1);
+      healthBar.setTint(color);
+      barsArray.push(healthBar);
+    }
   }
   
   private setupInput() {
@@ -420,37 +336,14 @@ export class BallCrushGameScene extends Phaser.Scene {
     
     if (!opponentId) return;
     
-    // Update opponent position with prediction
+    // Update opponent position
     if (this.opponentPaddle && this.lobby.players[opponentId]) {
-      const targetX = this.lobby.players[opponentId].position.x;
-      const currentTime = Date.now();
-      
-      // Calculate opponent velocity
-      if (this.lastUpdateTime > 0) {
-        const timeDiff = Math.max(1, currentTime - this.lastUpdateTime);
-        this.opponentVelocity = (targetX - this.lastOpponentX) / timeDiff * 16; // Normalize to ~60fps
-      }
-      
-      this.lastOpponentX = targetX;
-      this.lastUpdateTime = currentTime;
-      
-      // Predict next position (predict 100ms ahead)
-      const predictedX = targetX + this.opponentVelocity * 3; // Scale factor for smoothness
-      const clampedPredictedX = Phaser.Math.Clamp(predictedX, 30, 330);
-      
-      // Dynamic interpolation based on distance
-      const distance = Math.abs(clampedPredictedX - this.opponentPaddle.x);
-      
-      if (distance > 20) {
-        // Far away - move quickly
-        this.opponentPaddle.x += (clampedPredictedX - this.opponentPaddle.x) * 0.4;
-      } else if (distance > 5) {
-        // Medium distance - normal speed
-        this.opponentPaddle.x += (clampedPredictedX - this.opponentPaddle.x) * 0.3;
-      } else {
-        // Close - smooth into place
-        this.opponentPaddle.x = Phaser.Math.Linear(this.opponentPaddle.x, targetX, 0.2);
-      }
+      // Smooth movement
+      this.opponentPaddle.x = Phaser.Math.Linear(
+        this.opponentPaddle.x,
+        this.lobby.players[opponentId].position.x,
+        0.3
+      );
     }
     
     // Update health bars
@@ -477,8 +370,8 @@ export class BallCrushGameScene extends Phaser.Scene {
   }
   
   private setInitialBallDirection() {
-    // Start ball moving in a random direction
-    const angle = Phaser.Math.Between(0, 360);
+    // Start ball moving toward player 2 (top) first
+    const angle = Phaser.Math.Between(45, 135); // Upward angles
     const rad = Phaser.Math.DegToRad(angle);
     this.ballDirection.set(Math.cos(rad), Math.sin(rad));
     
@@ -516,9 +409,12 @@ export class BallCrushGameScene extends Phaser.Scene {
       ballBody.velocity.y * ballBody.velocity.y
     );
     
-    // Ball should go UP when hitting player paddle
-    ballBody.velocity.x = hitPosition * currentSpeed * 1.2;
-    ballBody.velocity.y = -Math.abs(ballBody.velocity.y) * 1.1;
+    // Determine direction based on which paddle was hit
+    if (paddle === this.playerPaddle) {
+      // My paddle - ball should go up
+      ballBody.velocity.x = hitPosition * currentSpeed * 1.2;
+      ballBody.velocity.y = -Math.abs(ballBody.velocity.y) * 1.1;
+    }
     
     // Normalize speed
     const newSpeed = Math.sqrt(
@@ -557,9 +453,11 @@ export class BallCrushGameScene extends Phaser.Scene {
       ballBody.velocity.y * ballBody.velocity.y
     );
     
-    // Ball should go DOWN when hitting opponent paddle
-    ballBody.velocity.x = hitPosition * currentSpeed * 1.2;
-    ballBody.velocity.y = Math.abs(ballBody.velocity.y) * 1.1;
+    if (paddle === this.opponentPaddle) {
+      // Opponent paddle - ball should go down
+      ballBody.velocity.x = hitPosition * currentSpeed * 1.2;
+      ballBody.velocity.y = Math.abs(ballBody.velocity.y) * 1.1;
+    }
     
     // Normalize speed
     const newSpeed = Math.sqrt(
@@ -583,29 +481,8 @@ export class BallCrushGameScene extends Phaser.Scene {
   update(time: number, delta: number) {
     if (!this.gameActive || !this.ball || !this.playerPaddle || !this.opponentPaddle) return;
     
-    // Calculate FPS
-    this.framesThisSecond++;
-    if (time - this.lastFpsUpdate >= 1000) {
-      this.currentFps = this.framesThisSecond;
-      this.fpsText.setText(`FPS: ${this.currentFps}`);
-      
-      // Color code FPS
-      if (this.currentFps >= 55) {
-        this.fpsText.setColor('#00ff00'); // Green - good
-      } else if (this.currentFps >= 45) {
-        this.fpsText.setColor('#ffff00'); // Yellow - okay
-      } else if (this.currentFps >= 30) {
-        this.fpsText.setColor('#ff9900'); // Orange - slow
-      } else {
-        this.fpsText.setColor('#ff0000'); // Red - bad
-      }
-      
-      this.framesThisSecond = 0;
-      this.lastFpsUpdate = time;
-    }
-    
-    // Send position updates (optimized rate)
-    if (time - this.lastSentPosition > this.sendRate) {
+    // Send position updates (20x per second)
+    if (this.isHost && time - this.lastSentPosition > this.sendRate) {
       ballCrushMultiplayer.updatePosition(this.lobbyId, this.uid, this.playerPaddle.x);
       this.lastSentPosition = time;
     }
@@ -621,8 +498,8 @@ export class BallCrushGameScene extends Phaser.Scene {
         directionY: this.ballDirection.y
       });
       
-      // REMOVED: No scoring checks - ball just bounces forever
-      // this.checkScoring();
+      // Check for scoring (host only)
+      this.checkScoring();
     }
     
     // Keyboard controls
@@ -639,9 +516,72 @@ export class BallCrushGameScene extends Phaser.Scene {
     this.ball.rotation += 0.02;
   }
   
-  // REMOVED: checkScoring method - no scoring
+  private checkScoring() {
+    if (!this.gameActive || !this.isHost || !this.lobby) return;
+    
+    const playerIds = Object.keys(this.lobby.players);
+    const opponentId = playerIds.find(id => id !== this.uid) || '';
+    
+    if (!opponentId) return;
+    
+    // Ball passed bottom (Player 1's side)
+    if (this.ball.y >= 630) {
+      console.log('🎯 Ball passed bottom');
+      
+      if (this.isPlayer1) {
+        // I'm Player 1, I got scored on
+        ballCrushMultiplayer.playerScored(this.lobbyId, opponentId, this.uid);
+      } else {
+        // I'm Player 2, I scored
+        ballCrushMultiplayer.playerScored(this.lobbyId, this.uid, opponentId);
+      }
+      
+      // Reset ball
+      this.resetBall('up');
+    }
+    
+    // Ball passed top (Player 2's side)
+    if (this.ball.y <= 10) {
+      console.log('🎯 Ball passed top');
+      
+      if (this.isPlayer1) {
+        // I'm Player 1, I scored
+        ballCrushMultiplayer.playerScored(this.lobbyId, this.uid, opponentId);
+      } else {
+        // I'm Player 2, I got scored on
+        ballCrushMultiplayer.playerScored(this.lobbyId, opponentId, this.uid);
+      }
+      
+      // Reset ball
+      this.resetBall('down');
+    }
+  }
   
-  // REMOVED: resetBall method - no ball resets
+  private resetBall(direction: 'up' | 'down') {
+    this.ball.x = 180;
+    this.ball.y = 320;
+    this.ballSpeed = 200;
+    
+    // Set direction based on who scored
+    let angle;
+    if (direction === 'up') {
+      angle = Phaser.Math.Between(45, 135); // Up
+    } else {
+      angle = Phaser.Math.Between(225, 315); // Down
+    }
+    
+    const rad = Phaser.Math.DegToRad(angle);
+    this.ballDirection.set(Math.cos(rad), Math.sin(rad));
+    
+    const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
+    ballBody.setVelocity(
+      this.ballDirection.x * this.ballSpeed,
+      this.ballDirection.y * this.ballSpeed
+    );
+    
+    // Send reset to client
+    ballCrushMultiplayer.resetBall(this.lobbyId, direction);
+  }
   
   private handleGameOver(won: boolean) {
     this.gameActive = false;
@@ -672,9 +612,10 @@ export class BallCrushGameScene extends Phaser.Scene {
     
     this.input.once('pointerdown', () => {
       this.cleanup();
-      this.scene.start('CookieScene', {
+      this.scene.start('BallCrushLobbyScene', {
         username: this.username,
-        uid: this.uid
+        uid: this.uid,
+        lobbyId: this.lobbyId
       });
     });
   }
@@ -705,9 +646,10 @@ export class BallCrushGameScene extends Phaser.Scene {
     
     this.input.once('pointerdown', () => {
       this.cleanup();
-      this.scene.start('CookieScene', {
+      this.scene.start('BallCrushLobbyScene', {
         username: this.username,
-        uid: this.uid
+        uid: this.uid,
+        lobbyId: this.lobbyId
       });
     });
   }
@@ -719,7 +661,6 @@ export class BallCrushGameScene extends Phaser.Scene {
     if (this.unsubscribeBall) {
       this.unsubscribeBall();
     }
-    BallCrushGameScene.isInitializing = false;
   }
   
   private addBackgroundEffects() {

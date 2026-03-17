@@ -27,7 +27,7 @@ import { SkyShooterLobbyScene } from './scenes/sky-shooter/SkyShooterLobbyScene'
 // Import Ball Crush scenes
 import { BallCrushLoaderScene } from './scenes/ball-crush/BallCrushLoaderScene';
 import { BallCrushStartScene } from './scenes/ball-crush/BallCrushStartScene';
-// import { BallCrushGameScene } from './scenes/ball-crush/BallCrushGameScene';
+import { BallCrushGameScene } from './scenes/ball-crush/BallCrushGameScene';
 import { BallCrushScoresScene } from './scenes/ball-crush/BallCrushScoresScene';
 import { BallCrushGameOverScene } from './scenes/ball-crush/BallCrushGameOverScene';
 import { BallCrushProfileScene } from './scenes/ball-crush/BallCrushProfileScene';
@@ -36,7 +36,12 @@ import { BallCrushLeaderboardScene } from './scenes/ball-crush/BallCrushLeaderbo
 import { URLEncryption } from './utils/encryption';
 import { BallCrushLobbyScene } from './scenes/ball-crush/BallCrushLobbyScene';
 import { BallCrushMatchmakingScene } from './scenes/ball-crush/BallCrushMatchmakingScene';
-import { BallCrushGameScene } from './scenes/TestScene';
+
+
+import { CheckersStartScene } from './scenes/checkers/CheckersStartScene';
+import { CheckersGameScene } from './scenes/checkers/CheckersGameScene';
+import { CheckersLoaderScene } from './scenes/checkers/CheckersLoaderScene';
+
 
 // Determine which game to load based on URL path
 (function () {
@@ -118,62 +123,70 @@ const getGameScenes = () => {
     const gameId = window.gameConfig.gameId;
 
     // Always include CookieScene first
-    const scenes = [CookieScene, BallCrushLoaderScene, BallCrushGameScene];
-
+    const scenes = [CookieScene];
+    // const scenes = [CheckersStartScene,CheckersGameScene];
     // Add game-specific scenes based on gameId
-    // switch (gameId) {
-    //     case 'flappy-bird':
-    //         scenes.push(
-    //             FlappyBirdLoaderScene,
-    //             FlappyBirdStartScene,
-    //             FlappyBirdGameScene,
-    //             FlappyBirdScoresScene,
-    //             FlappyBirdGameOverScene,
-    //             FlappyBirdProfileScene,
-    //             FlappyBirdLeaderboardScene
-    //         );
-    //         break;
+    switch (gameId) {
+        case 'flappy-bird':
+            scenes.push(
+                FlappyBirdLoaderScene,
+                FlappyBirdStartScene,
+                FlappyBirdGameScene,
+                FlappyBirdScoresScene,
+                FlappyBirdGameOverScene,
+                FlappyBirdProfileScene,
+                FlappyBirdLeaderboardScene
+            );
+            break;
 
-    //     case 'sky-shooter':
-    //         scenes.push(
-    //             SkyShooterLoaderScene,
-    //             SkyShooterStartScene,
-    //            // SkyShooterGameScene,
-    //             SkyShooterScoresScene,
-    //             SkyShooterGameOverScene,
-    //             SkyShooterProfileScene,
-    //             SkyShooterMatchmakingScene,
-    //             SkyShooterLobbyScene,
-    //             SkyShooterLeaderboardScene
-    //         );
-    //         break;
+        // case 'sky-shooter':
+        //     scenes.push(
+        //         SkyShooterLoaderScene,
+        //         SkyShooterStartScene,
+        //         // SkyShooterGameScene,
+        //         SkyShooterScoresScene,
+        //         SkyShooterGameOverScene,
+        //         SkyShooterProfileScene,
+        //         SkyShooterMatchmakingScene,
+        //         SkyShooterLobbyScene,
+        //         SkyShooterLeaderboardScene
+        //     );
+        //     break;
 
-    //     case 'ball-crush':
-    //         scenes.push(
-    //             BallCrushLoaderScene,
-    //             BallCrushStartScene,
-    //             BallCrushMatchmakingScene,
-    //             BallCrushLobbyScene,
-    //             BallCrushGameScene,
-    //             BallCrushScoresScene,
-    //             BallCrushGameOverScene,
-    //             BallCrushProfileScene,
-    //             BallCrushLeaderboardScene
-    //         );
-    //         break;
+        case 'ball-crush':
+            scenes.push(
+                BallCrushLoaderScene,
+                BallCrushStartScene,
+                BallCrushMatchmakingScene,
+                BallCrushLobbyScene,
+                BallCrushGameScene,
+                BallCrushScoresScene,
+                BallCrushGameOverScene,
+                BallCrushProfileScene,
+                BallCrushLeaderboardScene
+            );
+            break;
 
-    //     default:
-    //         console.warn(`Unknown game: ${gameId}, defaulting to Flappy Bird`);
-    //         scenes.push(
-    //             FlappyBirdLoaderScene,
-    //             FlappyBirdStartScene,
-    //             FlappyBirdGameScene,
-    //             FlappyBirdScoresScene,
-    //             FlappyBirdGameOverScene,
-    //             FlappyBirdProfileScene,
-    //             FlappyBirdLeaderboardScene
-    //         );
-    // }
+        case 'checkers':
+            scenes.push(
+                CheckersLoaderScene,  // Add this first
+                CheckersStartScene,
+                CheckersGameScene
+            );
+            break;
+
+        default:
+            console.warn(`Unknown game: ${gameId}, defaulting to Flappy Bird`);
+            scenes.push(
+                FlappyBirdLoaderScene,
+                FlappyBirdStartScene,
+                FlappyBirdGameScene,
+                FlappyBirdScoresScene,
+                FlappyBirdGameOverScene,
+                FlappyBirdProfileScene,
+                FlappyBirdLeaderboardScene
+            );
+    }
 
     return scenes;
 };

@@ -1,0 +1,745 @@
+// src/scenes/ball-crush/BallCrushGameScene.ts
+import Phaser from 'phaser';
+import { ballCrushMultiplayer, BallCrushLobby } from '../../firebase/ballCrushMultiplayer';
+import { ref, onValue, set, remove, get } from 'firebase/database';
+import { db } from '../../firebase/init';
+
+export class BallCrushGameScene extends Phaser.Scene {
+  private username: string = '';
+  private uid: string = '';
+  private lobbyId: string = '';
+  private lobby: BallCrushLobby | null = null;
+  
+  // Game objects
+  private playerPaddle!: Phaser.GameObjects.Image;
+  private opponentPaddle!: Phaser.GameObjects.Image;
+  private ball!: Phaser.GameObjects.Image;
+  
+  // UI Elements
+  private playerHealthBars: Phaser.GameObjects.Image[] = [];
+  private opponentHealthBars: Phaser.GameObjects.Image[] = [];
+  private scoreText!: Phaser.GameObjects.Text;
+  
+  // FPS Display
+  private fpsText!: Phaser.GameObjects.Text;
+  private frameCount: number = 0;
+  private lastFpsUpdate: number = 0;
+  private currentFps: number = 0;
+  
+  // Ping Display
+  private pingText!: Phaser.GameObjects.Text;
+  private pingValue: number = 0;
+  private pingStartTime: number = 0;
+  private pingHistory: number[] = [];
+  private pingListener: (() => void) | null = null;
+  
+  // Game state
+  private gameActive: boolean = true;
+  private ballSpeed: number = 200;
+  private ballDirection: Phaser.Math.Vector2;
+  
+  // Network
+  private isHost: boolean = false;
+  private isPlayer1: boolean = false;
+  private unsubscribeLobby: (() => void) | null = null;
+  private unsubscribeBall: (() => void) | null = null;
+  private lastSentPosition: number = 0;
+  private sendRate: number = 30; // Send ~33 times per second
+  
+  // === FUTURE POSITION PREDICTION ===
+  private readonly PREDICTION_MS = 100; // Send positions 100ms in the future
+  private serverTimeOffset: number = 0; // Difference between local and server time
+  private lastServerTimeSync: number = 0;
+  private timeSyncInterval: number = 10000; // Sync time every 10 seconds
+  
+  // Received ball data with future timestamp
+  private receivedBallData: {
+    x: number;
+    y: number;
+    speed: number;
+    dirX: number;
+    dirY: number;
+    targetTime: number; // The time this position was intended for
+  } | null = null;
+  
+  // Opponent prediction
+  private targetOpponentX: number = 180;
+  private opponentVelocity: number = 0;
+  private lastOpponentX: number = 180;
+  private lastOpponentUpdate: number = 0;
+  
+  // Controls
+  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
+  private moveSpeed: number = 5;
+  
+  private static isInitializing: boolean = false;
+  
+  constructor() {
+    super({ key: 'BallCrushGameScene' });
+    this.ballDirection = new Phaser.Math.Vector2(1, 1).normalize();
+  }
+  
+  init(data: { username: string; uid: string; lobbyId: string }) {
+    if (BallCrushGameScene.isInitializing) {
+      console.log('⚠️ BallCrushGameScene already initializing, skipping...');
+      return;
+    }
+    
+    BallCrushGameScene.isInitializing = true;
+    
+    this.username = data.username || 'Player';
+    this.uid = data.uid || '';
+    this.lobbyId = data.lobbyId || '';
+    
+    console.log('⚽ BallCrushGameScene started for:', this.username);
+  }
+  
+  async create() {
+    await this.getLobbyData();
+    
+    if (!this.lobby) {
+      console.error('❌ No lobby data found');
+      this.scene.start('CookieScene', { username: this.username, uid: this.uid });
+      return;
+    }
+    
+    const playerIds = Object.keys(this.lobby.players);
+    this.isPlayer1 = playerIds[0] === this.uid;
+    this.isHost = playerIds[0] === this.uid;
+    
+    console.log('🎮 Player role:', this.isPlayer1 ? 'Player 1 (Bottom)' : 'Player 2 (Top)');
+    console.log('🎮 Is host:', this.isHost);
+    
+    // Enable physics
+    this.physics.world.setBounds(0, 0, 360, 640);
+    this.physics.world.gravity.y = 0;
+    
+    // Background
+    if (this.textures.exists('ball-background')) {
+      const bg = this.add.image(180, 320, 'ball-background');
+      bg.setDisplaySize(360, 640);
+      bg.setDepth(-1);
+    } else {
+      this.cameras.main.setBackgroundColor('#1a3a1a');
+    }
+    
+    this.addBackgroundEffects();
+    this.createPaddles();
+    this.createBall();
+    this.createUI();
+    this.setupInput();
+    
+    // Sync time with server before starting
+    await this.syncServerTime();
+    
+    this.setupFirebaseListeners();
+    
+    this.gameActive = true;
+    
+    if (this.isHost) {
+      console.log('🎯 Host setting initial ball direction');
+      this.setInitialBallDirection();
+    }
+    
+    this.lastUpdateTime = Date.now();
+    this.lastFpsUpdate = Date.now();
+    this.startPingMeasurement();
+    
+    // Periodic time sync
+    this.time.addEvent({
+      delay: this.timeSyncInterval,
+      callback: () => this.syncServerTime(),
+      loop: true
+    });
+  }
+  
+  /**
+   * Sync local time with server time
+   */
+  private async syncServerTime() {
+    try {
+      const timeRef = ref(db, 'serverTime');
+      const clientSentTime = Date.now();
+      await set(timeRef, { timestamp: clientSentTime });
+      
+      const snapshot = await get(timeRef);
+      if (snapshot.exists()) {
+        const serverReceivedTime = snapshot.val().timestamp;
+        const clientReceivedTime = Date.now();
+        
+        // Estimate server time at client received moment
+        const estimatedServerTime = serverReceivedTime + (clientReceivedTime - clientSentTime) / 2;
+        this.serverTimeOffset = estimatedServerTime - clientReceivedTime;
+        
+        console.log(`🕐 Time synced - Offset: ${this.serverTimeOffset}ms`);
+      }
+    } catch (error) {
+      console.error('Failed to sync time:', error);
+    }
+  }
+  
+  /**
+   * Get current synchronized server time
+   */
+  private getServerTime(): number {
+    return Date.now() + this.serverTimeOffset;
+  }
+  
+  private createBall() {
+    if (!this.textures.exists('ball')) {
+      console.error('❌ Ball texture not found');
+      return;
+    }
+    
+    this.ball = this.physics.add.image(180, 300, 'ball');
+    this.ball.setScale(0.15);
+    
+    const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
+    ballBody.setCircle(12);
+    ballBody.setCollideWorldBounds(true);
+    ballBody.setBounce(1, 1);
+    
+    this.physics.add.collider(this.ball, this.playerPaddle, this.hitPlayerPaddle, undefined, this);
+    this.physics.add.collider(this.ball, this.opponentPaddle, this.hitOpponentPaddle, undefined, this);
+    
+    this.add.particles(0, 0, 'ball', {
+      scale: { start: 0.08, end: 0.02 },
+      alpha: { start: 0.3, end: 0 },
+      lifespan: 300,
+      frequency: 50,
+      follow: this.ball,
+      tint: 0xffaa00
+    });
+  }
+  
+  private setupFirebaseListeners() {
+    if (!this.lobbyId) return;
+    
+    this.unsubscribeLobby = ballCrushMultiplayer.subscribeToLobby(this.lobbyId, (lobby) => {
+      if (!lobby) {
+        this.handleDisconnect();
+        return;
+      }
+      this.lobby = lobby;
+      this.updateOpponentPosition();
+    });
+    
+    // All players listen for ball updates (host sends, clients receive)
+    this.unsubscribeBall = ballCrushMultiplayer.subscribeToBallUpdates(this.lobbyId, (ballData) => {
+      if (!this.ball) return;
+      
+      // Store the received data with its target time
+      this.receivedBallData = {
+        x: ballData.x,
+        y: ballData.y,
+        speed: ballData.speed,
+        dirX: ballData.directionX,
+        dirY: ballData.directionY,
+        targetTime: ballData.targetTime || ballData.timestamp
+      };
+      
+      if (!this.isHost) {
+        // Client: Use the future position data
+        // The actual update happens in update() to account for timing
+      }
+    });
+  }
+  
+  /**
+   * FIXED: Smooth opponent movement with deadzone
+   */
+  private updateOpponentPosition() {
+    if (!this.lobby) return;
+    
+    const playerIds = Object.keys(this.lobby.players);
+    const opponentId = playerIds.find(id => id !== this.uid) || '';
+    
+    if (!opponentId || !this.opponentPaddle || !this.lobby.players[opponentId]) return;
+    
+    const targetX = this.lobby.players[opponentId].position.x;
+    const currentX = this.opponentPaddle.x;
+    const distance = targetX - currentX;
+    
+    // DEADZONE: Don't move if very close
+    if (Math.abs(distance) < 0.5) {
+      return;
+    }
+    
+    // SMOOTH EASING: Move a percentage of remaining distance
+    const moveAmount = distance * 0.15;
+    this.opponentPaddle.x = Phaser.Math.Clamp(currentX + moveAmount, 30, 330);
+    
+    // Update health bars
+    const myHealth = this.lobby.players[this.uid]?.health || 5;
+    const opponentHealth = this.lobby.players[opponentId]?.health || 5;
+    
+    for (let i = 0; i < this.playerHealthBars.length; i++) {
+      this.playerHealthBars[i].setVisible(i < myHealth);
+    }
+    
+    for (let i = 0; i < this.opponentHealthBars.length; i++) {
+      this.opponentHealthBars[i].setVisible(i < opponentHealth);
+    }
+    
+    const myScore = this.lobby.players[this.uid]?.score || 0;
+    const opponentScore = this.lobby.players[opponentId]?.score || 0;
+    this.scoreText.setText(`${myScore} - ${opponentScore}`);
+  }
+  
+  update(time: number, delta: number) {
+    if (!this.gameActive || !this.ball || !this.playerPaddle || !this.opponentPaddle) return;
+    
+    // Calculate FPS
+    this.frameCount++;
+    if (time - this.lastFpsUpdate >= 1000) {
+      this.currentFps = this.frameCount;
+      this.frameCount = 0;
+      this.lastFpsUpdate = time;
+      
+      this.fpsText.setText(`FPS: ${this.currentFps}`);
+      if (this.currentFps >= 55) this.fpsText.setColor('#00ff00');
+      else if (this.currentFps >= 45) this.fpsText.setColor('#ffff00');
+      else if (this.currentFps >= 30) this.fpsText.setColor('#ff9900');
+      else this.fpsText.setColor('#ff0000');
+    }
+    
+    // Send position updates
+    if (time - this.lastSentPosition > this.sendRate) {
+      ballCrushMultiplayer.updatePosition(this.lobbyId, this.uid, this.playerPaddle.x);
+      this.lastSentPosition = time;
+    }
+    
+    if (this.isHost) {
+      // HOST: Send future ball positions
+      const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
+      
+      // Predict where the ball will be in PREDICTION_MS milliseconds
+      const futureTime = this.getServerTime() + this.PREDICTION_MS;
+      const futureX = this.ball.x + ballBody.velocity.x * (this.PREDICTION_MS / 1000);
+      const futureY = this.ball.y + ballBody.velocity.y * (this.PREDICTION_MS / 1000);
+      
+      ballCrushMultiplayer.updateBallPosition(this.lobbyId, {
+        x: futureX,
+        y: futureY,
+        speed: this.ballSpeed,
+        directionX: this.ballDirection.x,
+        directionY: this.ballDirection.y,
+        timestamp: Date.now(),
+        targetTime: futureTime // When this position should be reached
+      });
+    } else {
+      // CLIENT: Use received future positions
+      if (this.receivedBallData) {
+        const now = this.getServerTime();
+        const timeUntilTarget = this.receivedBallData.targetTime - now;
+        
+        // Calculate how far along the prediction we should be
+        const progress = 1 - (timeUntilTarget / this.PREDICTION_MS);
+        
+        if (progress >= 0 && progress <= 1) {
+          // We're in the prediction window - interpolate
+          const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
+          
+          // Blend velocities
+          const targetVelX = this.receivedBallData.dirX * this.receivedBallData.speed;
+          const targetVelY = this.receivedBallData.dirY * this.receivedBallData.speed;
+          
+          const currentVelX = ballBody.velocity.x;
+          const currentVelY = ballBody.velocity.y;
+          
+          // Blend based on progress (more trust as we approach target time)
+          const blendFactor = Math.min(progress * 2, 0.5);
+          
+          const newVelX = currentVelX * (1 - blendFactor) + targetVelX * blendFactor;
+          const newVelY = currentVelY * (1 - blendFactor) + targetVelY * blendFactor;
+          
+          ballBody.setVelocity(newVelX, newVelY);
+          
+          // Update direction
+          const speed = Math.sqrt(newVelX * newVelX + newVelY * newVelY);
+          if (speed > 0) {
+            this.ballDirection.set(newVelX / speed, newVelY / speed);
+            this.ballSpeed = speed;
+          }
+        } else if (progress > 1) {
+          // Past the prediction window - clear it
+          this.receivedBallData = null;
+        }
+      }
+    }
+    
+    // Keyboard controls
+    if (this.cursors) {
+      if (this.cursors.left?.isDown) {
+        this.playerPaddle.x = Math.max(30, this.playerPaddle.x - this.moveSpeed);
+      }
+      if (this.cursors.right?.isDown) {
+        this.playerPaddle.x = Math.min(330, this.playerPaddle.x + this.moveSpeed);
+      }
+    }
+    
+    this.ball.rotation += 0.02;
+  }
+  
+  private setInitialBallDirection() {
+    const angle = Phaser.Math.Between(0, 360);
+    const rad = Phaser.Math.DegToRad(angle);
+    this.ballDirection.set(Math.cos(rad), Math.sin(rad));
+    
+    const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
+    ballBody.setVelocity(
+      this.ballDirection.x * this.ballSpeed,
+      this.ballDirection.y * this.ballSpeed
+    );
+    
+    // Send initial ball position with future timestamp
+    const futureTime = this.getServerTime() + this.PREDICTION_MS;
+    ballCrushMultiplayer.updateBallPosition(this.lobbyId, {
+      x: this.ball.x,
+      y: this.ball.y,
+      speed: this.ballSpeed,
+      directionX: this.ballDirection.x,
+      directionY: this.ballDirection.y,
+      timestamp: Date.now(),
+      targetTime: futureTime
+    });
+  }
+  
+  private hitPlayerPaddle(ball: any, paddle: any) {
+    if (!this.gameActive || !this.isHost) return;
+    
+    this.tweens.add({
+      targets: this.playerPaddle,
+      scale: 0.2,
+      duration: 100,
+      yoyo: true
+    });
+    
+    const ballBody = ball.body as Phaser.Physics.Arcade.Body;
+    const hitPosition = (ball.x - paddle.x) / 30;
+    const currentSpeed = Math.sqrt(
+      ballBody.velocity.x * ballBody.velocity.x + 
+      ballBody.velocity.y * ballBody.velocity.y
+    );
+    
+    ballBody.velocity.x = hitPosition * currentSpeed * 1.2;
+    ballBody.velocity.y = -Math.abs(ballBody.velocity.y) * 1.1;
+    
+    const newSpeed = Math.sqrt(
+      ballBody.velocity.x * ballBody.velocity.x + 
+      ballBody.velocity.y * ballBody.velocity.y
+    );
+    
+    ballBody.velocity.x = (ballBody.velocity.x / newSpeed) * currentSpeed;
+    ballBody.velocity.y = (ballBody.velocity.y / newSpeed) * currentSpeed;
+    
+    this.ballDirection.set(
+      ballBody.velocity.x / currentSpeed,
+      ballBody.velocity.y / currentSpeed
+    );
+    
+    this.ballSpeed = Math.min(this.ballSpeed + 5, 400);
+  }
+  
+  private hitOpponentPaddle(ball: any, paddle: any) {
+    if (!this.gameActive || !this.isHost) return;
+    
+    this.tweens.add({
+      targets: this.opponentPaddle,
+      scale: 0.2,
+      duration: 100,
+      yoyo: true
+    });
+    
+    const ballBody = ball.body as Phaser.Physics.Arcade.Body;
+    const hitPosition = (ball.x - paddle.x) / 30;
+    const currentSpeed = Math.sqrt(
+      ballBody.velocity.x * ballBody.velocity.x + 
+      ballBody.velocity.y * ballBody.velocity.y
+    );
+    
+    ballBody.velocity.x = hitPosition * currentSpeed * 1.2;
+    ballBody.velocity.y = Math.abs(ballBody.velocity.y) * 1.1;
+    
+    const newSpeed = Math.sqrt(
+      ballBody.velocity.x * ballBody.velocity.x + 
+      ballBody.velocity.y * ballBody.velocity.y
+    );
+    
+    ballBody.velocity.x = (ballBody.velocity.x / newSpeed) * currentSpeed;
+    ballBody.velocity.y = (ballBody.velocity.y / newSpeed) * currentSpeed;
+    
+    this.ballDirection.set(
+      ballBody.velocity.x / currentSpeed,
+      ballBody.velocity.y / currentSpeed
+    );
+    
+    this.ballSpeed = Math.min(this.ballSpeed + 5, 400);
+  }
+  
+  private startPingMeasurement() {
+    const pingRef = ref(db, `pings/${this.lobbyId}/${this.uid}`);
+    
+    this.time.addEvent({
+      delay: 2000,
+      callback: () => {
+        if (!this.gameActive) return;
+        this.pingStartTime = Date.now();
+        set(pingRef, {
+          timestamp: this.pingStartTime,
+          sender: this.uid,
+          lobbyId: this.lobbyId
+        }).catch(console.error);
+      },
+      loop: true
+    });
+    
+    this.pingListener = onValue(pingRef, (snapshot) => {
+      if (snapshot.exists() && this.pingStartTime > 0) {
+        const data = snapshot.val();
+        if (data.sender === this.uid) {
+          const receiveTime = Date.now();
+          const ping = receiveTime - data.timestamp;
+          
+          this.pingHistory.push(ping);
+          if (this.pingHistory.length > 5) this.pingHistory.shift();
+          
+          const avgPing = this.pingHistory.reduce((a, b) => a + b, 0) / this.pingHistory.length;
+          this.pingValue = Math.round(avgPing);
+          
+          this.pingText.setText(`Ping: ${this.pingValue}ms`);
+          
+          if (this.pingValue < 50) this.pingText.setColor('#00ff00');
+          else if (this.pingValue < 100) this.pingText.setColor('#ffff00');
+          else if (this.pingValue < 200) this.pingText.setColor('#ff9900');
+          else this.pingText.setColor('#ff0000');
+        }
+      }
+    });
+  }
+  
+  // ... (keep other helper methods: createPaddles, createUI, setupInput, 
+  //      getLobbyData, handleDisconnect, cleanup, addBackgroundEffects, 
+  //      movePlayer, etc. from your original code)
+  
+  private createPaddles() {
+    if (!this.lobby) return;
+    
+    const playerIds = Object.keys(this.lobby.players);
+    const myData = this.lobby.players[this.uid];
+    const opponentId = playerIds.find(id => id !== this.uid) || '';
+    const opponentData = this.lobby.players[opponentId];
+    
+    if (!myData || !opponentData) {
+      console.error('❌ Missing player data');
+      return;
+    }
+    
+    const bottomPaddle = this.physics.add.image(180, 550, 'player');
+    bottomPaddle.setScale(0.15);
+    
+    const topPaddle = this.physics.add.image(180, 50, 'player');
+    topPaddle.setScale(0.15);
+    topPaddle.setFlipY(true);
+    
+    if (this.isPlayer1) {
+      this.playerPaddle = bottomPaddle;
+      this.opponentPaddle = topPaddle;
+      
+      this.add.text(180, 590, 'YOU', {
+        fontSize: '14px',
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 2
+      }).setOrigin(0.5);
+      
+      this.add.text(180, 30, opponentData.displayName, {
+        fontSize: '12px',
+        color: '#ff4444',
+        stroke: '#000000',
+        strokeThickness: 2
+      }).setOrigin(0.5);
+      
+    } else {
+      this.playerPaddle = topPaddle;
+      this.opponentPaddle = bottomPaddle;
+      
+      this.add.text(180, 30, 'YOU', {
+        fontSize: '14px',
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 2
+      }).setOrigin(0.5);
+      
+      this.add.text(180, 590, opponentData.displayName, {
+        fontSize: '12px',
+        color: '#44ff44',
+        stroke: '#000000',
+        strokeThickness: 2
+      }).setOrigin(0.5);
+    }
+    
+    const playerBody = this.playerPaddle.body as Phaser.Physics.Arcade.Body;
+    playerBody.setSize(40, 20);
+    playerBody.setCollideWorldBounds(true);
+    playerBody.setImmovable(true);
+    
+    const opponentBody = this.opponentPaddle.body as Phaser.Physics.Arcade.Body;
+    opponentBody.setSize(40, 20);
+    opponentBody.setCollideWorldBounds(true);
+    opponentBody.setImmovable(true);
+    
+    this.playerPaddle.x = myData.position.x;
+    this.opponentPaddle.x = opponentData.position.x;
+    
+    this.lastOpponentX = opponentData.position.x;
+    
+    console.log('🏓 Paddle assignment:', {
+      isPlayer1: this.isPlayer1,
+      playerPaddle: this.isPlayer1 ? 'bottom' : 'top',
+      opponentPaddle: this.isPlayer1 ? 'top' : 'bottom'
+    });
+  }
+  
+  private createUI() {
+    const myHealthY = this.isPlayer1 ? 620 : 20;
+    for (let i = 0; i < 5; i++) {
+      const healthBar = this.add.image(80 + (i * 40), myHealthY, 'ball');
+      healthBar.setScale(0.1);
+      healthBar.setTint(0x00ff00);
+      this.playerHealthBars.push(healthBar);
+    }
+    
+    const opponentHealthY = this.isPlayer1 ? 20 : 620;
+    for (let i = 0; i < 5; i++) {
+      const healthBar = this.add.image(80 + (i * 40), opponentHealthY, 'ball');
+      healthBar.setScale(0.1);
+      healthBar.setTint(0xff0000);
+      this.opponentHealthBars.push(healthBar);
+    }
+    
+    this.scoreText = this.add.text(180, 300, '0 - 0', {
+      fontSize: '24px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 4
+    }).setOrigin(0.5);
+    
+    this.fpsText = this.add.text(10, 10, 'FPS: 0', {
+      fontSize: '14px',
+      color: '#00ff00',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 2
+    });
+    
+    this.pingText = this.add.text(280, 10, 'Ping: 0ms', {
+      fontSize: '14px',
+      color: '#ffff00',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 2
+    });
+    
+    this.add.text(180, 560, 'Move with ← → arrows or touch', {
+      fontSize: '12px',
+      color: '#ffffff'
+    }).setOrigin(0.5);
+  }
+  
+  private setupInput() {
+    if (this.input.keyboard) {
+      this.cursors = this.input.keyboard.createCursorKeys();
+    }
+    
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (pointer.isDown && this.playerPaddle && this.gameActive) {
+        this.movePlayer(pointer.x);
+      }
+    });
+    
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (this.playerPaddle && this.gameActive) {
+        this.movePlayer(pointer.x);
+      }
+    });
+  }
+  
+  private movePlayer(x: number) {
+    if (!this.playerPaddle || !this.gameActive) return;
+    const newX = Phaser.Math.Clamp(x, 30, 330);
+    this.playerPaddle.x = newX;
+  }
+  
+  private async getLobbyData() {
+    try {
+      this.lobby = await ballCrushMultiplayer.getLobby(this.lobbyId);
+      console.log('📊 Lobby data:', this.lobby);
+    } catch (error) {
+      console.error('❌ Error getting lobby data:', error);
+    }
+  }
+  
+  private handleDisconnect() {
+    this.gameActive = false;
+    
+    this.add.text(180, 300, 'Opponent disconnected', {
+      fontSize: '24px',
+      color: '#ff0000',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 4
+    }).setOrigin(0.5);
+    
+    this.add.text(180, 350, 'Game will continue', {
+      fontSize: '24px',
+      color: '#ffff00',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 4
+    }).setOrigin(0.5);
+    
+    this.add.text(180, 400, 'Click to return to menu', {
+      fontSize: '16px',
+      color: '#ffffff'
+    }).setOrigin(0.5);
+    
+    this.input.once('pointerdown', () => {
+      this.cleanup();
+      this.scene.start('CookieScene', {
+        username: this.username,
+        uid: this.uid
+      });
+    });
+  }
+  
+  private cleanup() {
+    if (this.unsubscribeLobby) this.unsubscribeLobby();
+    if (this.unsubscribeBall) this.unsubscribeBall();
+    if (this.pingListener) this.pingListener();
+    BallCrushGameScene.isInitializing = false;
+  }
+  
+  private addBackgroundEffects() {
+    for (let i = 0; i < 5; i++) {
+      const x = Phaser.Math.Between(50, 310);
+      const y = Phaser.Math.Between(100, 540);
+      const circle = this.add.circle(x, y, 10, 0xffaa00, 0.05);
+      
+      this.tweens.add({
+        targets: circle,
+        y: y + 20,
+        alpha: 0.1,
+        duration: 3000 + i * 500,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut'
+      });
+    }
+  }
+  
+  shutdown() {
+    this.cleanup();
+  }
+}
