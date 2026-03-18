@@ -152,7 +152,7 @@ export class FlappyBirdStartScene extends Phaser.Scene {
 
     // Use the Flappy Bird specific functions
     const [userData, leaderboard, rank, balance] = await Promise.all([
-      getFlappyBirdUserData(this.username),
+      getFlappyBirdUserData(this.uid),
       getFlappyBirdLeaderboard(10),
       getFlappyBirdPlayerRank(this.username),
       getFlappyBirdBalance(this.uid)
@@ -325,7 +325,11 @@ export class FlappyBirdStartScene extends Phaser.Scene {
       { text: '🏆 LEADERBOARD', color: '#2196F3', scene: 'FlappyBirdLeaderboardScene' },
       { text: '👤 PROFILE', color: '#9C27B0', scene: 'FlappyBirdProfileScene' },
       { text: '📊 MY SCORES', color: '#FF9800', scene: 'FlappyBirdScoresScene' },
-      { text: '🛒 STORE', color: '#E91E63', scene: 'FlappyBirdStoreScene' }
+      {
+    text: '🏆 TOURNAMENT',
+    color: '#9C27B0', // Purple
+    scene: 'PrizeTournamentScene'
+}
     ];
 
     buttons.forEach((btn, index) => {

@@ -1,10 +1,8 @@
-// src/scenes/checkers/CheckersGameScene.ts
+// src/scenes/checkers/CheckersTestSkillScene.ts
 import Phaser from 'phaser';
 import { CheckersUserData } from '../../firebase/checkersService';
 
-export class CheckersGameScene extends Phaser.Scene {
-
-
+export class CheckersTestSkillScene extends Phaser.Scene {
     // Add these properties to your CheckersGameScene class
     private gameStartTime: number = 0;
     private movesCount: number = 0;
@@ -39,7 +37,7 @@ export class CheckersGameScene extends Phaser.Scene {
     private readonly BOARD_OFFSET_Y = 110; // Adjusted for centering
 
     constructor() {
-        super({ key: 'CheckersGameScene' });
+        super({ key: 'CheckersTestSkillScene' });
     }
 
     init(data: { username: string; uid: string; userData: CheckersUserData }) {
@@ -867,37 +865,86 @@ export class CheckersGameScene extends Phaser.Scene {
 
         if (redPieces === 0) {
             console.log('🎉 BLACK WINS!');
-            this.goToGameOver('black');
+            this.gameOver('BLACK WINS!');
         } else if (blackPieces === 0) {
             console.log('🎉 RED WINS!');
-            this.goToGameOver('red');
+            this.gameOver('RED WINS!');
         }
     }
-    private goToGameOver(winner: 'red' | 'black') {
-        const gameDuration = Math.floor((Date.now() - this.gameStartTime) / 1000);
+    private gameOver(message: string) {
+        this.gameActive = false;
 
-        console.log('🎯 Going to Game Over scene with data:', {
-            userData: this.userData,
-            username: this.username,
-            uid: this.uid,
-            winner: winner,
-            playerColor: 'red',
-            piecesCaptured: this.piecesCapturedCount,
-            kingsMade: this.kingsMadeCount,
-            moves: this.movesCount,
-            gameDuration: gameDuration
+        // Show game over message
+        const gameOverText = this.add.text(180, 280, message, {
+            fontSize: '32px',
+            color: '#ffff00',
+            fontStyle: 'bold',
+            stroke: '#000000',
+            strokeThickness: 4
+        }).setOrigin(0.5);
+
+        // Add practice mode indicator
+        this.add.text(180, 320, '⚡ PRACTICE MODE', {
+            fontSize: '16px',
+            color: '#888888',
+            fontStyle: 'bold'
+        }).setOrigin(0.5);
+
+        // Add options
+        this.add.text(180, 370, 'Tap to play again', {
+            fontSize: '18px',
+            color: '#ffffff'
+        }).setOrigin(0.5);
+
+        this.add.text(180, 400, '← Back to menu', {
+            fontSize: '14px',
+            color: '#aaaaaa'
+        }).setOrigin(0.5);
+
+        // Handle tap
+        this.input.once('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            const x = pointer.x;
+            const y = pointer.y;
+
+            // Check if tap is in the "Back to menu" area (bottom)
+            if (y > 380) {
+                this.goBack();
+            } else {
+                this.restartGame();
+            }
         });
+    }
+    private restartGame() {
+        console.log('🔄 Restarting practice game...');
 
-        this.scene.start('CheckersGameOverScene', {
-            userData: this.userData,
+        // Clean up current game
+        this.children.removeAll(true);
+
+        // Reset state
+        this.board = [];
+        this.squares = [];
+        this.pieces = [];
+        this.crowns = [];
+        this.selectedPiece = null;
+        this.validMoves = [];
+        this.currentPlayer = 'red';
+        this.gameActive = true;
+        this.aiThinking = false;
+
+        // Reset counters
+        this.gameStartTime = Date.now();
+        this.movesCount = 0;
+        this.piecesCapturedCount = 0;
+        this.kingsMadeCount = 0;
+
+        // Recreate the game
+        this.create();
+    }
+    private goBack() {
+        console.log('🔙 Returning to Checkers start scene');
+        this.scene.start('CheckersStartScene', {
             username: this.username,
-            uid: this.uid,
-            winner: winner,
-            playerColor: 'red', // Player always plays red
-            piecesCaptured: this.piecesCapturedCount,
-            kingsMade: this.kingsMadeCount,
-            moves: this.movesCount,
-            gameDuration: gameDuration
+            uid: this.uid
         });
     }
 

@@ -1,19 +1,23 @@
 import Phaser from 'phaser';
-import { getLeaderboard, LeaderboardEntry } from '../../firebase/simple';
+import { getFlappyBirdLeaderboard, FlappyBirdLeaderboardEntry } from '../../firebase/flappyBirdSimple'; // Change this import
 
 export class FlappyBirdLeaderboardScene extends Phaser.Scene {
-  private leaderboard: LeaderboardEntry[] = [];
+  private leaderboard: FlappyBirdLeaderboardEntry[] = []; // Use specific type
   private loadingText!: Phaser.GameObjects.Text;
   private backButton!: Phaser.GameObjects.Text;
   private refreshButton!: Phaser.GameObjects.Text;
   private errorText!: Phaser.GameObjects.Text;
+  private username: string = '';
+  private uid: string = '';
   
   constructor() {
     super({ key: 'FlappyBirdLeaderboardScene' });
   }
   
-  init() {
+  init(data: { username?: string; uid?: string }) {
     console.log('🏆 LeaderboardScene initialized');
+    this.username = data?.username || '';
+    this.uid = data?.uid || '';
   }
   
   async create() {
@@ -21,8 +25,8 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor('#1a1a2e');
     
     // Title
-    this.add.text(180, 30, '🏆 TOP PLAYERS', {
-      fontSize: '24px',
+    this.add.text(180, 30, '🏆 FLAPPY BIRD LEADERBOARD', {
+      fontSize: '20px',
       color: '#ffd700',
       fontStyle: 'bold',
       stroke: '#000000',
@@ -45,8 +49,8 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
   
   private async loadLeaderboard() {
     try {
-      console.log('📡 Fetching leaderboard...');
-      this.leaderboard = await getLeaderboard(15);
+      console.log('📡 Fetching Flappy Bird leaderboard...');
+      this.leaderboard = await getFlappyBirdLeaderboard(15); // Use Flappy Bird specific function
       
       console.log('✅ Leaderboard data:', this.leaderboard);
       
@@ -86,7 +90,7 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
       fontStyle: 'bold' 
     });
     
-    this.add.text(310, yPos, 'LVL', { 
+    this.add.text(310, yPos, 'WINS', { // Changed from LVL to WINS
       fontSize: '14px', 
       color: '#ffd700', 
       fontStyle: 'bold' 
@@ -131,7 +135,7 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
       });
       
       // Player name (truncate if too long)
-      let displayName = entry.displayName;
+      let displayName = entry.displayName || entry.username;
       if (displayName.length > 10) {
         displayName = displayName.substring(0, 8) + '...';
       }
@@ -148,10 +152,11 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
         fontStyle: 'bold'
       });
       
-      // Level
-      this.add.text(315, yPos, entry.level.toString(), { 
+      // Wins - using totalWins from the entry
+      const wins = entry.totalWins || 0;
+      this.add.text(315, yPos, wins.toString(), { 
         fontSize: '14px', 
-        color: '#888888' 
+        color: wins > 0 ? '#ffff00' : '#888888' 
       });
       
       yPos += 28;
@@ -184,14 +189,16 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
       color: '#ffffff'
     }).setOrigin(0.5);
     
-    this.add.text(180, 330, 'Be the first to play!', {
+    this.add.text(180, 330, 'Be the first to play Flappy Bird!', {
       fontSize: '14px',
       color: '#ffff00'
     }).setOrigin(0.5);
   }
   
   private showError(message: string) {
-    this.loadingText.destroy();
+    if (this.loadingText) {
+      this.loadingText.destroy();
+    }
     
     this.errorText = this.add.text(180, 250, '❌', {
       fontSize: '48px',
@@ -210,7 +217,7 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
     
     // Make screen tappable to retry
     this.input.once('pointerdown', () => {
-      this.scene.restart();
+      this.scene.restart({ username: this.username, uid: this.uid });
     });
   }
   
@@ -232,7 +239,10 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
     });
     
     this.backButton.on('pointerdown', () => {
-      this.scene.start('FlappyBirdStartScene');
+      this.scene.start('FlappyBirdStartScene', { 
+        username: this.username,
+        uid: this.uid 
+      });
     });
   }
   
@@ -254,7 +264,7 @@ export class FlappyBirdLeaderboardScene extends Phaser.Scene {
     });
     
     this.refreshButton.on('pointerdown', () => {
-      this.scene.restart();
+      this.scene.restart({ username: this.username, uid: this.uid });
     });
   }
 }

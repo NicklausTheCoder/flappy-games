@@ -17,6 +17,19 @@ export interface CheckersUserData {
     winningsCount: number;
     lastWinDate?: string;
 
+    winnings: {
+        checkers: {
+            total: number;
+            count: number;
+            lastWin?: string;
+            history?: Array<{
+                amount: number;
+                date: string;
+                description: string;
+            }>;
+        }
+    };
+
     // Checkers specific stats
     gamesPlayed: number;
     gamesWon: number;
@@ -104,13 +117,108 @@ function getDefaultCheckersUserData(username: string): CheckersUserData {
         isActive: true
     };
 }
+// Add these to your checkersService.ts file
 
+// Leaderboard entry for Checkers
+export interface CheckersLeaderboardEntry {
+    username: string;
+    displayName: string;
+    gamesWon: number;
+    gamesPlayed: number;
+    winRate: number;
+    rank: string;
+    level: number;
+    piecesCaptured: number;
+    kingsMade: number;
+}
+
+// =========== GET LEADERBOARD ===========
+
+// Fallback function using user_profiles
+async function getCheckersLeaderboardFallback(limit: number): Promise<CheckersLeaderboardEntry[]> {
+    try {
+        const profilesRef = ref(db, 'user_profiles');
+        const snapshot = await get(profilesRef);
+
+        if (!snapshot.exists()) return [];
+
+        const leaderboard: CheckersLeaderboardEntry[] = [];
+
+        snapshot.forEach((child) => {
+            const data = child.val();
+            // Only include if they've played Checkers (have gamesWon > 0)
+            if (data.gamesWon && data.gamesWon > 0) {
+                leaderboard.push({
+                    username: data.username || 'unknown',
+                    displayName: data.displayName || 'Unknown',
+                    gamesWon: data.gamesWon || 0,
+                    gamesPlayed: data.gamesPlayed || 0,
+                    winRate: data.winRate || 0,
+                    rank: data.rank || 'Bronze',
+                    level: data.level || 1,
+                    piecesCaptured: data.piecesCaptured || 0,
+                    kingsMade: data.kingsMade || 0
+                });
+            }
+        });
+
+        // Sort by games won
+        return leaderboard
+            .sort((a, b) => b.gamesWon - a.gamesWon)
+            .slice(0, limit);
+    } catch (error) {
+        console.error('❌ Fallback leaderboard also failed:', error);
+        return [];
+    }
+}
+
+// =========== UPDATE LEADERBOARD ===========
+export async function updateCheckersLeaderboard(uid: string, userData: any): Promise<void> {
+    try {
+        const publicData = userData.public || {};
+        const checkersStats = userData.games?.checkers || {};
+
+        // Calculate win rate
+        const gamesPlayed = checkersStats.gamesPlayed || 0;
+        const gamesWon = checkersStats.gamesWon || 0;
+        let winRate = 0;
+
+        if (gamesPlayed > 0) {
+            winRate = Math.round((gamesWon / gamesPlayed) * 100);
+        }
+
+        // Save to dedicated Checkers leaderboard path
+        const leaderboardRef = ref(db, `leaderboards/checkers/${uid}`);
+
+        const leaderboardData = {
+            uid: uid,
+            username: publicData.username || 'unknown',
+            displayName: publicData.displayName || 'Unknown',
+            avatar: publicData.avatar || 'default',
+            gamesWon: gamesWon || 0,
+            gamesPlayed: gamesPlayed || 0,
+            winRate: winRate,
+            rank: checkersStats.rank || 'Bronze',
+            level: checkersStats.level || 1,
+            piecesCaptured: checkersStats.piecesCaptured || 0,
+            kingsMade: checkersStats.kingsMade || 0,
+            lastUpdated: new Date().toISOString()
+        };
+
+        console.log('📊 Updating Checkers leaderboard:', leaderboardData);
+
+        await set(leaderboardRef, leaderboardData);
+
+        console.log(`✅ Updated Checkers leaderboard for ${uid}`);
+    } catch (error) {
+        console.error('❌ Error updating Checkers leaderboard:', error);
+    }
+}
 // =========== GET USER DATA ===========
 export async function getCheckersUserData(uid: string): Promise<CheckersUserData | null> {
     try {
         console.log(`📡 Fetching Checkers data for UID: ${uid}`);
 
-        // Get user data
         const userRef = ref(db, `users/${uid}`);
         const userSnapshot = await get(userRef);
 
@@ -144,8 +252,8 @@ export async function getCheckersUserData(uid: string): Promise<CheckersUserData
             achievements: []
         };
 
-        // Get winnings data
-        const winnings = userData.winnings || {
+        // Get Checkers-specific winnings
+        const checkersWinnings = userData.winnings?.checkers || {
             total: 0,
             count: 0
         };
@@ -158,10 +266,15 @@ export async function getCheckersUserData(uid: string): Promise<CheckersUserData
             level: userData.public?.globalLevel || 1,
             createdAt: userData.metadata?.createdAt || new Date().toISOString(),
 
-            // Winnings
-            totalWinnings: winnings.total || 0,
-            winningsCount: winnings.count || 0,
-            lastWinDate: winnings.lastWin,
+            // Game-specific winnings
+            winnings: {
+                checkers: {
+                    total: checkersWinnings.total || 0,
+                    count: checkersWinnings.count || 0,
+                    lastWin: checkersWinnings.lastWin,
+                    history: checkersWinnings.history || []
+                }
+            },
 
             // Stats
             gamesPlayed: gameStats.gamesPlayed || 0,
@@ -195,6 +308,7 @@ export async function getCheckersUserData(uid: string): Promise<CheckersUserData
 }
 
 // =========== UPDATE GAME STATS ===========
+// In updateCheckersStats function, add this at the end:
 export async function updateCheckersStats(
     uid: string,
     won: boolean,
@@ -298,8 +412,15 @@ export async function updateCheckersStats(
             rank: newRank,
             level: newLevel,
             winRate: winRate,
+            piecesCaptured: newPiecesCaptured,
+            kingsMade: newKingsMade,
             lastUpdated: new Date().toISOString()
         });
+
+        // IMPORTANT: Update the dedicated leaderboard
+        const freshUserSnapshot = await get(userRef);
+        const freshUserData = freshUserSnapshot.val();
+        await updateCheckersLeaderboard(uid, freshUserData);
 
         console.log(`✅ Checkers stats updated:`, updates);
 
@@ -307,7 +428,6 @@ export async function updateCheckersStats(
         console.error('❌ Error updating Checkers stats:', error);
     }
 }
-
 // =========== ADD WINNINGS ===========
 export async function addCheckersWinnings(
     uid: string,
@@ -315,7 +435,7 @@ export async function addCheckersWinnings(
     description: string
 ): Promise<boolean> {
     try {
-        console.log(`💰 Adding winnings for UID: ${uid}, amount: ${amount}`);
+        console.log(`💰 Adding Checkers winnings for UID: ${uid}, amount: ${amount}`);
 
         const userRef = ref(db, `users/${uid}`);
         const userSnapshot = await get(userRef);
@@ -327,52 +447,81 @@ export async function addCheckersWinnings(
 
         const userData = userSnapshot.val();
 
-        // Get current winnings
-        const currentWinnings = userData.winnings?.total || 0;
-        const currentCount = userData.winnings?.count || 0;
+        // Get current Checkers-specific winnings
+        const currentWinnings = userData.winnings?.checkers?.total || 0;
+        const currentCount = userData.winnings?.checkers?.count || 0;
 
-        // Update winnings
-        const newWinnings = {
-            total: currentWinnings + amount,
-            count: currentCount + 1,
-            lastWin: new Date().toISOString(),
-            history: [
-                ...(userData.winnings?.history || []),
-                {
-                    amount,
-                    date: new Date().toISOString(),
-                    description
-                }
-            ].slice(-10)
+        // Update winnings - store under 'checkers' key
+        const updates: any = {
+            [`winnings/checkers/total`]: currentWinnings + amount,
+            [`winnings/checkers/count`]: currentCount + 1,
+            [`winnings/checkers/lastWin`]: new Date().toISOString()
         };
 
-        await update(ref(db, `users/${uid}`), {
-            winnings: newWinnings
-        });
+        // Add to history
+        const historyEntry = {
+            amount,
+            date: new Date().toISOString(),
+            description,
+            game: 'checkers'
+        };
 
-        await set(ref(db, `winnings/${uid}/total`), newWinnings.total);
-        await set(ref(db, `winnings/${uid}/count`), newWinnings.count);
+        // Get existing history or create new array
+        const existingHistory = userData.winnings?.checkers?.history || [];
+        updates[`winnings/checkers/history`] = [historyEntry, ...existingHistory].slice(0, 10);
 
-        // Create transaction record
-        const transactionsRef = ref(db, `winnings_transactions/${uid}`);
+        // Update user data
+        await update(ref(db, `users/${uid}`), updates);
+
+        // Also update the game-specific winnings collection
+        await set(ref(db, `winnings/checkers/${uid}/total`), currentWinnings + amount);
+        await set(ref(db, `winnings/checkers/${uid}/count`), currentCount + 1);
+        await set(ref(db, `winnings/checkers/${uid}/lastWin`), new Date().toISOString());
+
+        // Create transaction record in game-specific path
+        const transactionsRef = ref(db, `winnings_transactions/checkers/${uid}`);
         const newTransactionRef = push(transactionsRef);
         await set(newTransactionRef, {
             amount,
-            balance: newWinnings.total,
+            balance: currentWinnings + amount,
             description,
             timestamp: new Date().toISOString(),
-            type: 'win'
+            type: 'win',
+            game: 'checkers'
         });
 
-        console.log(`✅ Winnings updated. New total: $${newWinnings.total.toFixed(2)}`);
+        console.log(`✅ Checkers winnings updated. New total: $${(currentWinnings + amount).toFixed(2)}`);
         return true;
 
     } catch (error) {
-        console.error('❌ Error adding winnings:', error);
+        console.error('❌ Error adding Checkers winnings:', error);
         return false;
     }
 }
+export async function getCheckersWinnings(uid: string): Promise<number> {
+    try {
+        const winningsRef = ref(db, `users/${uid}/winnings/checkers/total`);
+        const snapshot = await get(winningsRef);
 
+        if (snapshot.exists()) {
+            return snapshot.val();
+        }
+
+        // Try alternative path
+        const altRef = ref(db, `winnings/checkers/${uid}/total`);
+        const altSnapshot = await get(altRef);
+
+        if (altSnapshot.exists()) {
+            return altSnapshot.val();
+        }
+
+        return 0;
+
+    } catch (error) {
+        console.error('Error getting Checkers winnings:', error);
+        return 0;
+    }
+}
 // =========== SAVE GAME HISTORY ===========
 export async function saveCheckersGame(
     gameResult: CheckersGameResult
@@ -401,36 +550,56 @@ export async function saveCheckersGame(
 // =========== GET LEADERBOARD ===========
 export async function getCheckersLeaderboard(limit: number = 10): Promise<CheckersLeaderboardEntry[]> {
     try {
-        const profilesRef = ref(db, 'user_profiles');
-        const snapshot = await get(profilesRef);
+        console.log('📡 Fetching Checkers leaderboard from dedicated path...');
 
-        if (!snapshot.exists()) return [];
+        // First try to get from dedicated leaderboard path
+        const leaderboardRef = ref(db, 'leaderboards/checkers');
+        const snapshot = await get(leaderboardRef);
 
-        const leaderboard: CheckersLeaderboardEntry[] = [];
+        if (snapshot.exists()) {
+            const leaderboard: CheckersLeaderboardEntry[] = [];
 
-        snapshot.forEach((child) => {
-            const data = child.val();
-            leaderboard.push({
-                username: data.username || 'unknown',
-                displayName: data.displayName || 'Unknown',
-                gamesWon: data.gamesWon || 0,
-                winRate: data.winRate || 0,
-                rank: data.rank || 'Bronze',
-                level: data.level || 1,
-                piecesCaptured: data.piecesCaptured || 0
+            snapshot.forEach((child) => {
+                const data = child.val();
+                leaderboard.push({
+                    username: data.username || 'unknown',
+                    displayName: data.displayName || 'Unknown',
+                    gamesWon: data.gamesWon || 0,
+                    gamesPlayed: data.gamesPlayed || 0,
+                    winRate: data.winRate || 0,
+                    rank: data.rank || 'Bronze',
+                    level: data.level || 1,
+                    piecesCaptured: data.piecesCaptured || 0,
+                    kingsMade: data.kingsMade || 0
+                });
             });
-        });
 
-        // Sort by games won
-        return leaderboard
-            .sort((a, b) => b.gamesWon - a.gamesWon)
-            .slice(0, limit);
+            // Sort by games won (descending)
+            const sorted = leaderboard.sort((a, b) => b.gamesWon - a.gamesWon);
+
+            console.log(`✅ Found ${sorted.length} Checkers leaderboard entries`);
+
+            // Log top players for debugging
+            sorted.slice(0, 5).forEach((entry, index) => {
+                console.log(`  #${index + 1}: ${entry.displayName} - ${entry.gamesWon} wins`);
+            });
+
+            return sorted.slice(0, limit);
+        }
+
+        // Fallback to user_profiles
+        console.log('⚠️ Falling back to user_profiles for Checkers leaderboard...');
+        return getCheckersLeaderboardFallback(limit);
 
     } catch (error) {
-        console.error('Error getting leaderboard:', error);
-        return [];
+        console.error('❌ Error getting Checkers leaderboard:', error);
+
+        // Fallback to user_profiles if dedicated path fails
+        console.log('⚠️ Falling back to user_profiles...');
+        return getCheckersLeaderboardFallback(limit);
     }
 }
+
 
 // =========== GET USER STATS ===========
 export async function getCheckersUserStats(uid: string): Promise<any> {

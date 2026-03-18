@@ -364,7 +364,64 @@ export async function getFlappyBirdProfileStats(uid: string): Promise<any> {
 /**
  * Get leaderboard based on profile stats
  */
+// In flappyBirdSimple.ts
+// In flappyBirdSimple.ts - Replace your existing getFlappyBirdLeaderboard
+// In flappyBirdSimple.ts - Update getFlappyBirdLeaderboard
 export async function getFlappyBirdLeaderboard(limit: number = 10): Promise<FlappyBirdLeaderboardEntry[]> {
+    try {
+        console.log('📡 Fetching Flappy Bird leaderboard from dedicated path...');
+        
+        // Read from dedicated Flappy Bird leaderboard path
+        const leaderboardRef = ref(db, 'leaderboards/flappy-bird');
+        const snapshot = await get(leaderboardRef);
+
+        if (!snapshot.exists()) {
+            console.log('No Flappy Bird leaderboard data yet');
+            return [];
+        }
+
+        const leaderboard: FlappyBirdLeaderboardEntry[] = [];
+
+        snapshot.forEach((child) => {
+            const data = child.val();
+            
+            // Only include valid entries with scores > 0
+            if (data.highScore && data.highScore > 0) {
+                leaderboard.push({
+                    username: data.username || 'unknown',
+                    displayName: data.displayName || 'Unknown',
+                    highScore: data.highScore || 0,
+                    rank: data.rank || 'Bronze',
+                    level: data.level || 1,
+                    totalWins: data.totalWins || 0,
+                    winRate: data.winRate || 0
+                });
+            }
+        });
+
+        // Sort by high score (descending)
+        const sorted = leaderboard.sort((a, b) => b.highScore - a.highScore);
+        
+        console.log(`✅ Found ${sorted.length} Flappy Bird leaderboard entries`);
+        
+        // Log top scores for debugging
+        sorted.slice(0, 5).forEach((entry, index) => {
+            console.log(`  #${index + 1}: ${entry.displayName} - ${entry.highScore}`);
+        });
+        
+        return sorted.slice(0, limit);
+
+    } catch (error) {
+        console.error('❌ Error getting Flappy Bird leaderboard:', error);
+        
+        // Fallback to user_profiles if dedicated path fails
+        console.log('⚠️ Falling back to user_profiles...');
+        return getFlappyBirdLeaderboardFallback(limit);
+    }
+}
+
+// Add this fallback function for backward compatibility
+async function getFlappyBirdLeaderboardFallback(limit: number): Promise<FlappyBirdLeaderboardEntry[]> {
     try {
         const profilesRef = ref(db, 'user_profiles');
         const snapshot = await get(profilesRef);
@@ -375,24 +432,59 @@ export async function getFlappyBirdLeaderboard(limit: number = 10): Promise<Flap
 
         snapshot.forEach((child) => {
             const data = child.val();
-            leaderboard.push({
-                username: data.username || 'unknown',
-                displayName: data.displayName || 'Unknown',
-                highScore: data.highScore || 0,
-                rank: data.rank || 'Bronze',
-                level: data.level || 1,
-                totalWins: data.totalWins || 0,
-                winRate: data.winRate || 0
-            });
+            if (data.highScore && data.highScore > 0) {
+                leaderboard.push({
+                    username: data.username || 'unknown',
+                    displayName: data.displayName || 'Unknown',
+                    highScore: data.highScore || 0,
+                    rank: data.rank || 'Bronze',
+                    level: data.level || 1,
+                    totalWins: data.totalWins || 0,
+                    winRate: data.winRate || 0
+                });
+            }
         });
 
-        // Sort by high score
         return leaderboard
             .sort((a, b) => b.highScore - a.highScore)
             .slice(0, limit);
-
     } catch (error) {
-        console.error('Error getting Flappy Bird leaderboard:', error);
+        console.error('❌ Fallback leaderboard also failed:', error);
+        return [];
+    }
+}
+
+// Fallback function for backward compatibility
+async function getLegacyFlappyBirdLeaderboard(limit: number): Promise<FlappyBirdLeaderboardEntry[]> {
+    try {
+        const profilesRef = ref(db, 'user_profiles');
+        const snapshot = await get(profilesRef);
+
+        if (!snapshot.exists()) return [];
+
+        const leaderboard: FlappyBirdLeaderboardEntry[] = [];
+
+        snapshot.forEach((child) => {
+            const data = child.val();
+            // Only include if they've played Flappy Bird
+            if (data.highScore && data.highScore > 0) {
+                leaderboard.push({
+                    username: data.username || 'unknown',
+                    displayName: data.displayName || 'Unknown',
+                    highScore: data.highScore || 0,
+                    rank: data.rank || 'Bronze',
+                    level: data.level || 1,
+                    totalWins: data.totalWins || 0,
+                    winRate: data.winRate || 0
+                });
+            }
+        });
+
+        return leaderboard
+            .sort((a, b) => b.highScore - a.highScore)
+            .slice(0, limit);
+    } catch (error) {
+        console.error('Error getting legacy leaderboard:', error);
         return [];
     }
 }
@@ -496,7 +588,61 @@ export async function getFlappyBirdWinnings(uid: string): Promise<number> {
         return 0;
     }
 }
-
+// In flappyBirdSimple.ts - Add this new function
+// In flappyBirdSimple.ts - Fix the updateFlappyBirdLeaderboard function
+async function updateFlappyBirdLeaderboard(uid: string, score: number, userData: any) {
+    try {
+        const publicData = userData.public || {};
+        const flappyBirdStats = userData.games?.['flappy-bird'] || {};
+        
+        // Get current high score from leaderboard
+        const leaderboardRef = ref(db, `leaderboards/flappy-bird/${uid}`);
+        const currentSnapshot = await get(leaderboardRef);
+        
+        let currentHighScore = 0;
+        if (currentSnapshot.exists()) {
+            currentHighScore = currentSnapshot.val().highScore || 0;
+        }
+        
+        // Only update if new score is higher
+        const newHighScore = Math.max(score, currentHighScore, flappyBirdStats.highScore || 0);
+        
+        // SAFELY calculate winRate - prevent NaN
+        const totalGames = flappyBirdStats.totalGames || 0;
+        const totalWins = flappyBirdStats.totalWins || 0;
+        let winRate = 0;
+        
+        if (totalGames > 0) {
+            winRate = Math.round((totalWins / totalGames) * 100);
+        }
+        
+        // Ensure all numeric values are valid numbers
+        const leaderboardData = {
+            uid: uid,
+            username: publicData.username || 'unknown',
+            displayName: publicData.displayName || 'Unknown',
+            avatar: publicData.avatar || 'default',
+            highScore: newHighScore || 0,  // Ensure number
+            totalGames: totalGames || 0,    // Ensure number
+            totalWins: totalWins || 0,      // Ensure number
+            rank: flappyBirdStats.rank || 'Bronze',
+            level: flappyBirdStats.level || 1,
+            winRate: winRate,  // Now safe - never NaN
+            lastUpdated: new Date().toISOString()
+        };
+        
+        // Validate data before saving
+        console.log('📊 Saving to leaderboard:', leaderboardData);
+        
+        // Save to dedicated Flappy Bird leaderboard path
+        await set(leaderboardRef, leaderboardData);
+        
+        console.log(`✅ Updated Flappy Bird leaderboard for ${uid} with score: ${newHighScore}`);
+    } catch (error) {
+        console.error('❌ Error updating Flappy Bird leaderboard:', error);
+        // Don't throw - we don't want to break the game if leaderboard update fails
+    }
+}
 /**
  * Get user's win count
  */
@@ -638,42 +784,62 @@ export async function updateFlappyBirdWalletBalance(
 }
 
 // =========== SAVE GAME SCORE ===========
+
+// src/firebase/flappyBirdSimple.ts
+// In flappyBirdSimple.ts - Update your existing saveFlappyBirdScore function
+// In flappyBirdSimple.ts - Update saveFlappyBirdScore
 export async function saveFlappyBirdScore(
-    username: string,
+    uid: string,
     score: number,
     won: boolean,
     flaps?: number,
     distance?: number
 ): Promise<boolean> {
     try {
-        console.log(`💾 Saving Flappy Bird score for ${username}: ${score}`);
+        console.log(`💾 Saving Flappy Bird score for UID: ${uid}, score: ${score}`);
 
-        const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
-        const lookupSnapshot = await get(lookupRef);
-
-        if (!lookupSnapshot.exists()) {
-            console.error('❌ User not found in lookup');
+        const userRef = ref(db, `users/${uid}`);
+        const userSnapshot = await get(userRef);
+        
+        if (!userSnapshot.exists()) {
+            console.error(`❌ User not found for UID: ${uid}`);
             return false;
         }
 
-        const uid = lookupSnapshot.val();
+        const userData = userSnapshot.val();
         const timestamp = Date.now();
         const date = new Date(timestamp).toISOString();
 
         const scoreEntry: any = {
+            gameId: 'flappy-bird',
+            game: 'flappy-bird',
             score: score,
             won: won,
             timestamp: timestamp,
             date: date,
-            game: 'flappy-bird'
+            metadata: {
+                game: 'flappy-bird',
+                version: '1.0.0'
+            }
         };
 
         if (flaps !== undefined) scoreEntry.flaps = flaps;
         if (distance !== undefined) scoreEntry.distance = distance;
 
+        // Save score under user's scores
         const scoresRef = ref(db, `users/${uid}/scores`);
         const newScoreRef = push(scoresRef);
         await set(newScoreRef, scoreEntry);
+
+        // Update the stats FIRST so flappyBirdStats is up to date
+        await updateFlappyBirdStats(uid, score, won, flaps, distance);
+        
+        // Get fresh user data after stats update
+        const freshUserSnapshot = await get(userRef);
+        const freshUserData = freshUserSnapshot.val();
+        
+        // THEN update the dedicated leaderboard with fresh data
+        await updateFlappyBirdLeaderboard(uid, score, freshUserData);
 
         console.log('✅ Flappy Bird score saved with ID:', newScoreRef.key);
         return true;
@@ -684,28 +850,44 @@ export async function saveFlappyBirdScore(
     }
 }
 
+// New function to save to game-specific leaderboard
+async function saveToFlappyBirdLeaderboard(uid: string, score: number, userData: any) {
+    try {
+        const leaderboardRef = ref(db, `leaderboards/flappy-bird/${uid}`);
+        const publicData = userData.public || {};
+        const gameStats = userData.games?.['flappy-bird'] || {};
+        
+        await set(leaderboardRef, {
+            uid: uid,
+            username: publicData.username || 'Unknown',
+            displayName: publicData.displayName || 'Unknown',
+            avatar: publicData.avatar || 'default',
+            highScore: Math.max(score, gameStats.highScore || 0),
+            totalGames: (gameStats.totalGames || 0) + 1,
+            totalWins: gameStats.totalWins || 0,
+            lastPlayed: new Date().toISOString(),
+            rank: gameStats.rank || 'Bronze',
+            level: gameStats.level || 1
+        });
+
+        console.log('✅ Updated Flappy Bird leaderboard for:', uid);
+    } catch (error) {
+        console.error('❌ Error updating Flappy Bird leaderboard:', error);
+    }
+}
+// =========== UPDATE FLAPPY BIRD STATS ===========
 // =========== UPDATE FLAPPY BIRD STATS ===========
 export async function updateFlappyBirdStats(
-    username: string,
+    uid: string,  // Changed from username to uid
     score: number,
     won: boolean,
     flaps?: number,
     distance?: number
 ): Promise<void> {
     try {
-        console.log(`📊 Updating Flappy Bird stats for ${username}: score=${score}, won=${won}`);
+        console.log(`📊 Updating Flappy Bird stats for UID: ${uid}: score=${score}, won=${won}`);
 
-        const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
-        const lookupSnapshot = await get(lookupRef);
-
-        if (!lookupSnapshot.exists()) {
-            console.error('❌ User not found');
-            return;
-        }
-
-        const uid = lookupSnapshot.val();
-
-        // Get current Flappy Bird stats
+        // No lookup needed - use UID directly
         const statsRef = ref(db, `users/${uid}/games/flappy-bird`);
         const statsSnapshot = await get(statsRef);
 
@@ -801,44 +983,42 @@ export async function getFlappyBirdPlayerRank(username: string): Promise<number>
 }
 
 // =========== GET USER SCORES ===========
-export async function getFlappyBirdUserScores(username: string, limit: number = 10): Promise<FlappyBirdScoreEntry[]> {
+// Update getFlappyBirdUserScores to filter by game
+export async function getFlappyBirdUserScores(
+    uid: string,
+    limit: number = 10
+): Promise<FlappyBirdScoreEntry[]> {
     try {
-        console.log(`📊 Fetching Flappy Bird scores for: ${username}`);
+        console.log(`📊 Fetching Flappy Bird scores for UID: ${uid}`);
 
-        const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
-        const lookupSnapshot = await get(lookupRef);
-
-        if (!lookupSnapshot.exists()) {
-            console.log('❌ User not found in lookup');
-            return [];
-        }
-
-        const uid = lookupSnapshot.val();
-
-        // Get scores from user's scores list
         const scoresRef = ref(db, `users/${uid}/scores`);
         const scoresSnapshot = await get(scoresRef);
 
         if (scoresSnapshot.exists()) {
             const scoresData = scoresSnapshot.val();
 
-            // Convert object to array and sort by timestamp (newest first)
+            // Convert object to array and filter for Flappy Bird
             const scores: FlappyBirdScoreEntry[] = Object.entries(scoresData)
-                .map(([id, data]: [string, any]) => ({
-                    id: id,
-                    date: new Date(data.timestamp).toLocaleDateString(),
-                    score: data.score,
-                    won: data.won,
-                    timestamp: data.timestamp,
-                    game: data.game,
-                    flaps: data.flaps,
-                    distance: data.distance
-                }))
-                .filter(entry => entry.game === 'flappy-bird' || !entry.game) // Include legacy entries without game field
+                .map(([id, data]: [string, any]) => {
+                    const date = new Date(data.timestamp);
+                    const formattedDate = `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`;
+                    
+                    return {
+                        id: id,
+                        date: formattedDate,
+                        score: data.score,
+                        won: data.won,
+                        timestamp: data.timestamp,
+                        game: data.game || data.gameId || 'flappy-bird', // Check both fields
+                        flaps: data.flaps,
+                        distance: data.distance
+                    };
+                })
+                .filter(entry => entry.game === 'flappy-bird') // Strict filter for Flappy Bird
                 .sort((a, b) => b.timestamp - a.timestamp)
                 .slice(0, limit);
 
-            console.log(`✅ Found ${scores.length} Flappy Bird scores for ${username}`);
+            console.log(`✅ Found ${scores.length} Flappy Bird scores for UID: ${uid}`);
             return scores;
         }
 

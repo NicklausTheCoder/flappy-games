@@ -204,19 +204,31 @@ export class CheckersLoaderScene extends Phaser.Scene {
     });
   }
 
-  private goToStartScene() {
+private goToStartScene() {
     console.log('🚀 Moving to CheckersStartScene');
+    
+    // Make sure displayName is set
+    if (!this.displayName || this.displayName === 'Player') {
+        this.displayName = this.username; // Fallback to username
+    }
+
+    console.log('📤 Passing to StartScene:', {
+        username: this.username,
+        uid: this.uid,
+        displayName: this.displayName,
+        avatar: this.avatar
+    });
 
     // Fade out
     this.cameras.main.fadeOut(500, 0, 0, 0);
 
     this.scene.start('CheckersStartScene', {
-      username: this.username,
-      uid: this.uid,
-      displayName: this.displayName,
-      avatar: this.avatar
+        username: this.username,
+        uid: this.uid,
+        displayName: this.displayName,
+        avatar: this.avatar
     });
-  }
+}
 
   update() {
     // Loading circle animation

@@ -41,6 +41,14 @@ import { BallCrushMatchmakingScene } from './scenes/ball-crush/BallCrushMatchmak
 import { CheckersStartScene } from './scenes/checkers/CheckersStartScene';
 import { CheckersGameScene } from './scenes/checkers/CheckersGameScene';
 import { CheckersLoaderScene } from './scenes/checkers/CheckersLoaderScene';
+import { PrizeTournamentScene } from './scenes/flappy-bird/PrizeTournamentScene';
+import { CheckersGameOverScene } from './scenes/checkers/CheckersGameOverScene';
+import { CheckersLeaderboardScene } from './scenes/checkers/CheckersLeaderboardScene';
+import { CheckersStatsScene } from './scenes/checkers/CheckersStatsScene';
+import { CheckersProfileScene } from './scenes/checkers/CheckersProfileScene';
+import { CheckersTestSkillScene } from './scenes/checkers/CheckersTestSkillScene';
+import { CheckersLobbyScene } from './scenes/checkers/CheckersLobbyScene';
+import { CheckersMatchmakingScene } from './scenes/checkers/CheckersMatchmakingScene';
 
 
 // Determine which game to load based on URL path
@@ -135,6 +143,7 @@ const getGameScenes = () => {
                 FlappyBirdScoresScene,
                 FlappyBirdGameOverScene,
                 FlappyBirdProfileScene,
+                PrizeTournamentScene,
                 FlappyBirdLeaderboardScene
             );
             break;
@@ -171,7 +180,14 @@ const getGameScenes = () => {
             scenes.push(
                 CheckersLoaderScene,  // Add this first
                 CheckersStartScene,
-                CheckersGameScene
+                CheckersMatchmakingScene,  // Add this
+                CheckersLobbyScene,        // Add this
+                CheckersGameScene,
+                CheckersProfileScene,  // Add this
+                CheckersGameOverScene,
+                CheckersLeaderboardScene,  // Add this
+                CheckersStatsScene,  // Add this
+                CheckersTestSkillScene,  // Add this before the real game
             );
             break;
 
@@ -184,6 +200,7 @@ const getGameScenes = () => {
                 FlappyBirdScoresScene,
                 FlappyBirdGameOverScene,
                 FlappyBirdProfileScene,
+                PrizeTournamentScene,
                 FlappyBirdLeaderboardScene
             );
     }

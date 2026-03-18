@@ -48,7 +48,7 @@ export class CheckersStartScene extends Phaser.Scene {
 
     this.username = data.username;
     this.uid = data.uid || '';
-    this.displayName = data.displayName || data.username;
+    this.displayName = data.username;
     this.avatar = data.avatar || 'default';
 
     console.log('👤 Username set to:', this.username);
@@ -162,8 +162,8 @@ export class CheckersStartScene extends Phaser.Scene {
     this.playerRank = rankIndex + 1;
 
     console.log('✅ Checkers user data fetched:', {
-      username: this.userData.username,
-      displayName: this.userData.displayName,
+      username: this.username,
+      displayName: this.displayName,
       gamesPlayed: this.userData.gamesPlayed,
       gamesWon: this.userData.gamesWon,
       balance: this.balance
@@ -187,7 +187,7 @@ export class CheckersStartScene extends Phaser.Scene {
   private addBackground() {
     // Dark wood-like background
     this.cameras.main.setBackgroundColor('#2a1a0a');
-    
+
     // Add subtle pattern
     for (let i = 0; i < 5; i++) {
       const x = Phaser.Math.Between(0, 360);
@@ -241,7 +241,7 @@ export class CheckersStartScene extends Phaser.Scene {
   private createWelcomeMessage() {
     if (!this.userData) return;
 
-    this.add.text(180, 190, `Welcome, ${this.userData.displayName}!`, {
+    this.add.text(180, 190, `Welcome, ${this.displayName}!`, {
       fontSize: '16px',
       color: '#ffff00',
       stroke: '#000000',
@@ -253,8 +253,8 @@ export class CheckersStartScene extends Phaser.Scene {
       color: '#ffffff'
     }).setOrigin(0.5);
 
-    const winRate = this.userData.gamesPlayed > 0 
-      ? Math.round((this.userData.gamesWon / this.userData.gamesPlayed) * 100) 
+    const winRate = this.userData.gamesPlayed > 0
+      ? Math.round((this.userData.gamesWon / this.userData.gamesPlayed) * 100)
       : 0;
 
     this.add.text(180, 230, `Wins: ${this.userData.gamesWon} | Win Rate: ${winRate}%`, {
@@ -328,11 +328,23 @@ export class CheckersStartScene extends Phaser.Scene {
     const startY = 280;
 
     const buttons = [
-      { text: '♟️ PLAY CHECKERS', color: '#4CAF50', scene: 'CheckersGameScene' },
+      {
+        text: '🎮 FIND MATCH',
+        color: '#FF9800', // Orange
+        scene: 'CheckersMatchmakingScene'
+      },
       { text: '🏆 LEADERBOARD', color: '#2196F3', scene: 'CheckersLeaderboardScene' },
       { text: '👤 PROFILE', color: '#9C27B0', scene: 'CheckersProfileScene' },
-      { text: '📊 MY GAMES', color: '#FF9800', scene: 'CheckersScoresScene' },
-      { text: '🛒 STORE', color: '#E91E63', scene: 'CheckersStoreScene' }
+      {
+        text: '📊 MY STATS',
+        color: '#9C27B0', // Purple
+        scene: 'CheckersStatsScene'
+      },
+      {
+        text: '⚡ TEST SKILL',
+        color: '#FF9800', // Orange
+        scene: 'CheckersTestSkillScene'
+      }
     ];
 
     buttons.forEach((btn, index) => {
@@ -376,7 +388,7 @@ export class CheckersStartScene extends Phaser.Scene {
         bg.strokeRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
       });
 
-      if (btn.text === '♟️ PLAY CHECKERS') {
+      if (btn.text === '🎮 FIND MATCH') {
         button.on('pointerdown', async () => {
           if (this.userData!.balance < 1) {
             this.showInsufficientFunds();
@@ -397,17 +409,12 @@ export class CheckersStartScene extends Phaser.Scene {
               yoyo: true,
               onComplete: () => {
                 console.log('🔍 Starting Checkers game with:', {
-                  username: this.userData!.username,
+                  username: this.username,
                   uid: this.uid,
-                  displayName: this.userData!.displayName
+                  displayName: this.displayName
                 });
 
-                this.scene.start('CheckersGameScene', {
-                  username: this.userData!.username,
-                  uid: this.uid,
-                  displayName: this.userData!.displayName,
-                  avatar: this.userData!.avatar
-                });
+                this.scene.start('CheckersMatchmakingScene', { username: this.username, userData: this.userData, uid: this.uid });
               }
             });
           } else {
@@ -416,7 +423,7 @@ export class CheckersStartScene extends Phaser.Scene {
         });
       } else {
         button.on('pointerdown', () => {
-          this.scene.start(btn.scene, { userData: this.userData, uid: this.uid });
+          this.scene.start(btn.scene, { username: this.username, userData: this.userData, uid: this.uid });
         });
       }
 
@@ -503,20 +510,20 @@ export class CheckersStartScene extends Phaser.Scene {
       this.input.keyboard.on('keydown-ENTER', () => {
         if (this.userData && this.userData.balance >= 1) {
           this.scene.start('CheckersGameScene', {
-            username: this.userData.username,
+            username: this.username,
             uid: this.uid,
-            displayName: this.userData.displayName,
-            avatar: this.userData.avatar
+            displayName: this.displayName,
+            avatar: this.avatar
           });
         }
       });
       this.input.keyboard.on('keydown-SPACE', () => {
         if (this.userData && this.userData.balance >= 1) {
           this.scene.start('CheckersGameScene', {
-            username: this.userData.username,
+            username: this.username,
             uid: this.uid,
-            displayName: this.userData.displayName,
-            avatar: this.userData.avatar
+            displayName: this.displayName,
+            avatar: this.avatar
           });
         }
       });
