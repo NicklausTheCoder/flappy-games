@@ -17,6 +17,7 @@
         "dev": "node log.js dev & vite --config vite/config.dev.mjs",
         "build": "node log.js build & vite build --config vite/config.prod.mjs",
         "preview": "vite preview --host 0.0.0.0",
+        "start": "vite preview --host 0.0.0.0 --port $PORT",
         "dev-nolog": "vite --config vite/config.dev.mjs",
         "build-nolog": "vite build --config vite/config.prod.mjs"
     },
