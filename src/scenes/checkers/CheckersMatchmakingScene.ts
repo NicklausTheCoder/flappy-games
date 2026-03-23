@@ -389,16 +389,15 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
         }, 2000);
     }
 
+    // In CheckersMatchmakingScene.ts, update the checkForMatch method
+
     private async checkForMatch() {
         if (this.matchFound || this.cancelled) return;
 
         if (Date.now() - this.searchStartTime > this.maxSearchTime) {
             this.statusText.setText('⚠️ Search timed out');
-
-            // REFUND on timeout
             await this.refundGameFee();
 
-            // Show timeout message
             const timeoutText = this.add.text(180, 400, 'No players found', {
                 fontSize: '16px',
                 color: '#ffaa00'
@@ -411,27 +410,29 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
                     uid: this.uid
                 });
             });
-
             return;
         }
 
         try {
-            // Get all lobbies
             const lobbiesRef = ref(db, 'lobbies');
             const snapshot = await get(lobbiesRef);
 
             if (!snapshot.exists()) return;
 
             const lobbies = snapshot.val();
-            let foundLobby = false;
             const now = Date.now();
 
-            // Find a lobby where this player is a member
             for (const [lobbyId, lobbyData] of Object.entries(lobbies)) {
                 const lobby = lobbyData as any;
 
-                // Skip old lobbies (older than 5 minutes)
-                if (now - lobby.createdAt > 300000) {
+                // Skip old lobbies
+                if (now - lobby.createdAt > 120000) {
+                    continue;
+                }
+
+                // ONLY look for lobbies with status 'waiting'
+                // 'ready', 'playing', and 'finished' are NOT available for matchmaking
+                if (lobby.status !== 'waiting') {
                     continue;
                 }
 
@@ -440,15 +441,27 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
                     lobby.playerIds &&
                     lobby.playerIds.includes(this.uid)) {
 
+                    // Must have 2 players
+                    if (lobby.playerIds.length < 2) {
+                        await remove(ref(db, `lobbies/${lobbyId}`));
+                        continue;
+                    }
+
+                    // Make sure opponent is different player
+                    const opponentId = lobby.playerIds.find(id => id !== this.uid);
+                    if (opponentId === this.uid) {
+                        await remove(ref(db, `lobbies/${lobbyId}`));
+                        continue;
+                    }
+
                     console.log('🎯 Match found! Lobby:', lobbyId);
+                    console.log('   Lobby status:', lobby.status); // Should be 'waiting'
+
                     this.matchFound = true;
-                    foundLobby = true;
 
                     // Update UI
                     this.statusText.setText('Match found!');
                     this.searchText.setText('Opponent located!');
-
-                    // Add a flash effect
                     this.cameras.main.flash(500, 255, 255, 255);
 
                     // Stop checking
@@ -457,7 +470,6 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
                         this.matchCheckInterval = 0;
                     }
 
-                    // Stop search timer
                     if (this.searchTimer) {
                         this.searchTimer.destroy();
                     }
@@ -470,7 +482,7 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
                         this.goToLobby(lobbyId);
                     });
 
-                    // Also auto-continue after 2 seconds
+                    // Auto-continue after 2 seconds
                     this.time.delayedCall(2000, () => {
                         if (!this.cancelled && this.matchFound) {
                             this.goToLobby(lobbyId);
@@ -481,7 +493,6 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
                 }
             }
 
-            // Update queue count
             const count = await this.getQueueCount();
             this.queueCountText.setText(`Players in queue: ${count}`);
 

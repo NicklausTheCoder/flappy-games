@@ -39,7 +39,7 @@ import { BallCrushMatchmakingScene } from './scenes/ball-crush/BallCrushMatchmak
 
 
 import { CheckersStartScene } from './scenes/checkers/CheckersStartScene';
-import { CheckersGameScene } from './scenes/checkers/CheckersGameScene';
+import {  CheckersMultiplayerGameScene } from './scenes/checkers/CheckersMultiplayerGameScene';
 import { CheckersLoaderScene } from './scenes/checkers/CheckersLoaderScene';
 import { PrizeTournamentScene } from './scenes/flappy-bird/PrizeTournamentScene';
 import { CheckersGameOverScene } from './scenes/checkers/CheckersGameOverScene';
@@ -49,6 +49,9 @@ import { CheckersProfileScene } from './scenes/checkers/CheckersProfileScene';
 import { CheckersTestSkillScene } from './scenes/checkers/CheckersTestSkillScene';
 import { CheckersLobbyScene } from './scenes/checkers/CheckersLobbyScene';
 import { CheckersMatchmakingScene } from './scenes/checkers/CheckersMatchmakingScene';
+import { CheckersSocketTestScene } from './scenes/TestScene';
+import { TestStartScene } from './scenes/TestStartScene';
+import { CheckersTestLobbyScene } from './scenes/CheckersTestLobbyScene';
 
 
 // Determine which game to load based on URL path
@@ -130,6 +133,8 @@ if (import.meta.hot) {
 const getGameScenes = () => {
     const gameId = window.gameConfig.gameId;
 
+
+
     // Always include CookieScene first
     const scenes = [CookieScene];
     // const scenes = [CheckersStartScene,CheckersGameScene];
@@ -182,7 +187,7 @@ const getGameScenes = () => {
                 CheckersStartScene,
                 CheckersMatchmakingScene,  // Add this
                 CheckersLobbyScene,        // Add this
-                CheckersGameScene,
+               CheckersMultiplayerGameScene, // Rename this to CheckersMultiplayerGameScene
                 CheckersProfileScene,  // Add this
                 CheckersGameOverScene,
                 CheckersLeaderboardScene,  // Add this

@@ -3,9 +3,12 @@ import Phaser from 'phaser';
 import { checkersMultiplayer, CheckersLobby } from '../../firebase/checkersMultiplayer';
 import { ref, remove } from 'firebase/database';
 import { db } from '../../firebase/init';
+import { io, Socket } from 'socket.io-client';
 
 export class CheckersLobbyScene extends Phaser.Scene {
   private username: string = '';
+
+  private socket: Socket | null = null;
   private uid: string = '';
   private lobbyId: string = '';
   private lobby: CheckersLobby | null = null;
@@ -183,39 +186,26 @@ export class CheckersLobbyScene extends Phaser.Scene {
     });
   }
 
-  private onLobbyUpdate(lobby: CheckersLobby | null) {
+// In CheckersLobbyScene.ts, update the onLobbyUpdate method where both players are ready
+
+private onLobbyUpdate(lobby: CheckersLobby | null) {
     if (!this.scene || !this.scene.isActive()) return;
 
     if (!lobby) {
-      console.log('⏳ Waiting for lobby data...');
-      this.statusText.setText('⏳ Loading lobby...');
-      return;
+        console.log('⏳ Waiting for lobby data...');
+        this.statusText.setText('⏳ Loading lobby...');
+        return;
     }
 
+    // Check if game is starting (status changed to 'playing')
     if (lobby.status === 'playing' && !this.gameStarted) {
-      this.gameStarted = true;
-      this.statusText.setText('♟️ Game starting!');
-      this.readyButton.setVisible(false);
-
-      if (this.countdownTimer) {
-        this.countdownTimer.destroy();
-      }
-
-      this.time.delayedCall(1000, () => {
-        this.scene.start('CheckersGameScene', {
-          username: this.username,
-          uid: this.uid,
-          lobbyId: this.lobbyId,
-          lobby: lobby,
-          playerColor: 'red' // Player always plays red in multiplayer
-        });
-      });
-
-      return;
+        console.log('🎮 Game is starting!');
+        this.startGame();
+        return;
     }
 
     this.lobby = lobby;
-
+    
     const players = Object.values(lobby.players);
     const playerIds = Object.keys(lobby.players);
 
@@ -224,56 +214,62 @@ export class CheckersLobbyScene extends Phaser.Scene {
 
     // Update my info
     if (lobby.players[this.uid]) {
-      this.player1Name.setText(lobby.players[this.uid].displayName || this.username);
-      this.player1Ready.setText(lobby.players[this.uid].isReady ? '✅ Ready!' : '⏳ Not Ready');
-      this.player1Ready.setColor(lobby.players[this.uid].isReady ? '#00ff00' : '#ff6666');
-      this.player1Piece.setColor(lobby.players[this.uid].isReady ? '#00ff00' : '#ff0000');
+        const myPlayer = lobby.players[this.uid];
+        this.player1Name.setText(myPlayer.displayName || this.username);
+        this.player1Ready.setText(myPlayer.isReady ? '✅ Ready!' : '⏳ Not Ready');
+        this.player1Ready.setColor(myPlayer.isReady ? '#00ff00' : '#ff6666');
+        this.player1Piece.setColor(myPlayer.isReady ? '#00ff00' : '#ff0000');
     }
 
     // Update opponent info
     if (players.length >= 2) {
-      const opponent = players[opponentIndex];
-      this.player2Name.setText(opponent.displayName);
-      this.player2Piece.setText('⚫');
-      this.player2Piece.setColor(opponent.isReady ? '#00ff00' : '#000000');
-      this.player2Ready.setText(opponent.isReady ? '✅ Ready!' : '⏳ Not Ready');
-      this.player2Ready.setColor(opponent.isReady ? '#00ff00' : '#ff6666');
+        const opponent = players[opponentIndex];
+        this.player2Name.setText(opponent.displayName);
+        this.player2Piece.setText('⚫');
+        this.player2Piece.setColor(opponent.isReady ? '#00ff00' : '#000000');
+        this.player2Ready.setText(opponent.isReady ? '✅ Ready!' : '⏳ Not Ready');
+        this.player2Ready.setColor(opponent.isReady ? '#00ff00' : '#ff6666');
 
-      if (players.every(p => p.isReady)) {
-        this.statusText.setText('✅ Both players ready! Starting game...');
-        this.startCountdown();
-      } else {
-        this.statusText.setText('⏳ Waiting for both players to ready up...');
-
-        if (!this.isPlayerReady) {
-          this.readyButton.setStyle({ backgroundColor: '#4CAF50' });
-          this.readyButton.setText('✅ CLICK TO READY UP');
-          this.readyButton.setColor('#ffffff');
-          this.readyButton.setInteractive({ useHandCursor: true });
-          this.readyButton.off('pointerdown');
-          this.readyButton.on('pointerdown', () => {
-            this.setReady();
-          });
+        if (players.every(p => p.isReady)) {
+            this.statusText.setText('✅ Both players ready! Starting game...');
+            
+            // Mark lobby as 'ready' before starting countdown
+            if (lobby.status === 'waiting') {
+                checkersMultiplayer.markLobbyReady(this.lobbyId);
+            }
+            
+            this.startCountdown();
         } else {
-          this.readyButton.setStyle({ backgroundColor: '#888888' });
-          this.readyButton.setText('✅ READY! (WAITING)');
-          this.readyButton.disableInteractive();
-        }
-      }
-    } else {
-      this.player2Name.setText('Waiting...');
-      this.player2Piece.setText('❓');
-      this.player2Ready.setText('⏳ Not Joined');
-      this.statusText.setText('⏳ Waiting for opponent to join...');
+            this.statusText.setText('⏳ Waiting for both players to ready up...');
 
-      this.readyButton.setStyle({ backgroundColor: '#444444' });
-      this.readyButton.setText('🔒 WAITING FOR OPPONENT');
-      this.readyButton.disableInteractive();
+            if (!this.isPlayerReady) {
+                this.readyButton.setStyle({ backgroundColor: '#4CAF50' });
+                this.readyButton.setText('✅ CLICK TO READY UP');
+                this.readyButton.setColor('#ffffff');
+                this.readyButton.setInteractive({ useHandCursor: true });
+                this.readyButton.off('pointerdown');
+                this.readyButton.on('pointerdown', () => {
+                    this.setReady();
+                });
+            } else {
+                this.readyButton.setStyle({ backgroundColor: '#888888' });
+                this.readyButton.setText('✅ READY! (WAITING)');
+                this.readyButton.disableInteractive();
+            }
+        }
+    } else {
+        this.player2Name.setText('Waiting...');
+        this.player2Piece.setText('❓');
+        this.player2Ready.setText('⏳ Not Joined');
+        this.statusText.setText('⏳ Waiting for opponent to join...');
+        
+        this.readyButton.setStyle({ backgroundColor: '#444444' });
+        this.readyButton.setText('🔒 WAITING FOR OPPONENT');
+        this.readyButton.disableInteractive();
     }
 
     this.lobbyCodeText.setText(`Room: ${this.lobbyId.substring(0, 8)}...`);
-  }
-
+}
   private async setReady() {
     if (!this.lobby || this.isPlayerReady) return;
 
@@ -292,8 +288,37 @@ export class CheckersLobbyScene extends Phaser.Scene {
       yoyo: true
     });
   }
+  private async startGame() {
+    if (this.gameStarted) return;
+    this.gameStarted = true;
 
-  private startCountdown() {
+    console.log('🎮 Starting game...');
+    this.statusText.setText('♟️ Starting game...');
+
+    // Get the player's color from the lobby
+    const myPlayer = this.lobby?.players[this.uid];
+    const playerColor = myPlayer?.color || 'red';
+
+    console.log(`🎨 My color: ${playerColor}`);
+
+    // Small delay for visual feedback
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Navigate to the multiplayer game scene
+    this.scene.start('CheckersMultiplayerGameScene', {
+      username: this.username,
+      uid: this.uid,
+      userData: this.userData,
+      lobbyId: this.lobbyId,
+      lobby: this.lobby,
+      playerColor: playerColor
+    });
+  }
+
+
+// In CheckersLobbyScene.ts, update the startCountdown method
+
+private startCountdown() {
     if (this.countdownTimer || this.gameStarted) return;
 
     this.countdown = 3;
@@ -301,40 +326,41 @@ export class CheckersLobbyScene extends Phaser.Scene {
     this.countdownText.setText('3');
 
     this.countdownTimer = this.time.addEvent({
-      delay: 1000,
-      callback: () => {
-        this.countdown--;
-        this.countdownText.setText(this.countdown.toString());
+        delay: 1000,
+        callback: () => {
+            this.countdown--;
+            this.countdownText.setText(this.countdown.toString());
 
-        this.tweens.add({
-          targets: this.countdownText,
-          scale: 1.5,
-          duration: 200,
-          yoyo: true,
-          ease: 'Sine.easeInOut'
-        });
+            this.tweens.add({
+                targets: this.countdownText,
+                scale: 1.5,
+                duration: 200,
+                yoyo: true,
+                ease: 'Sine.easeInOut'
+            });
 
-        if (this.countdown % 2 === 0) {
-          this.tweens.add({
-            targets: [this.player1Card, this.player2Card],
-            alpha: 0.7,
-            duration: 200,
-            yoyo: true
-          });
-        }
+            if (this.countdown % 2 === 0) {
+                this.tweens.add({
+                    targets: [this.player1Card, this.player2Card],
+                    alpha: 0.7,
+                    duration: 200,
+                    yoyo: true
+                });
+            }
 
-        if (this.countdown <= 0) {
-          this.countdownTimer.destroy();
-          this.countdownText.setVisible(false);
+            if (this.countdown <= 0) {
+                this.countdownTimer.destroy();
+                this.countdownText.setVisible(false);
 
-          if (this.lobby && this.lobby.status === 'waiting' && !this.gameStarted) {
-            checkersMultiplayer.startGame(this.lobbyId);
-          }
-        }
-      },
-      repeat: 2
+                if (this.lobby && (this.lobby.status === 'waiting' || this.lobby.status === 'ready') && !this.gameStarted) {
+                    // Start the game - this changes status to 'playing'
+                    checkersMultiplayer.startGame(this.lobbyId);
+                }
+            }
+        },
+        repeat: 2
     });
-  }
+}
 
   private async leaveLobby() {
     if (this.unsubscribe) {

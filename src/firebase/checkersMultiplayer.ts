@@ -11,7 +11,7 @@ export interface CheckersPlayer {
   avatar: string;
   isReady: boolean;
   position: { x: number; y: number };
-  color?: 'red' | 'black'; // Add this for Checkers
+  color?: 'red' | 'black';
 }
 
 export interface CheckersLobby {
@@ -31,29 +31,48 @@ export interface CheckersLobby {
 
 class CheckersMultiplayer {
 
-  // =========== MATCHMAKING ===========
+  // =========== ONLINE STATUS MANAGEMENT ===========
+  // Following Ball Crush pattern - using SET to reset all fields
 
   /**
-   * Set player online status
+   * Set player online status - USING SET to reset all fields
    */
   async setPlayerOnline(uid: string, isOnline: boolean): Promise<void> {
     try {
+      // Use SET instead of UPDATE to reset all fields (like Ball Crush)
       await set(ref(db, `online/${uid}`), {
         online: isOnline,
         lastSeen: Date.now(),
-        inQueue: false,
-        inGame: false
+        inQueue: false,  // Reset to false
+        inGame: false    // Reset to false
       });
     } catch (error) {
       console.error('Error setting player online status:', error);
     }
   }
+// In checkersMultiplayer.ts, add this method
 
+/**
+ * Mark lobby as ready (both players ready, about to start)
+ */
+async markLobbyReady(lobbyId: string): Promise<void> {
+    if (!lobbyId) return;
+    
+    try {
+        await update(ref(db, `lobbies/${lobbyId}`), {
+            status: 'ready'
+        });
+        console.log(`✅ Lobby ${lobbyId} marked as ready`);
+    } catch (error) {
+        console.error('Error marking lobby as ready:', error);
+    }
+}
   /**
-   * Update player queue status
+   * Update player queue status - USING UPDATE (just for queue)
    */
   async setPlayerQueueStatus(uid: string, inQueue: boolean): Promise<void> {
     try {
+      // Use UPDATE to only change queue status (like Ball Crush)
       await update(ref(db, `online/${uid}`), {
         inQueue: inQueue,
         lastSeen: Date.now()
@@ -82,67 +101,88 @@ class CheckersMultiplayer {
   }
 
   /**
-   * Check if player is online
+   * Check if player is online AND in queue
+   * This ensures we only match players who are actively in the queue
    */
-// In checkersMultiplayer.ts, update isPlayerOnline:
-
-async isPlayerOnline(uid: string): Promise<boolean> {
+  async isPlayerOnlineAndInQueue(uid: string): Promise<boolean> {
     try {
-        const onlineRef = ref(db, `online/${uid}`);
-        const snapshot = await get(onlineRef);
+      const onlineRef = ref(db, `online/${uid}`);
+      const snapshot = await get(onlineRef);
 
-        if (snapshot.exists()) {
-            const data = snapshot.val();
-            // Increase timeout to 60 seconds (60000 ms)
-            const isOnline = data.online && (Date.now() - data.lastSeen < 60000);
-            return isOnline;
-        }
-        return false;
+      if (snapshot.exists()) {
+        const data = snapshot.val();
+        // Player is online AND in queue AND seen in last 30 seconds
+        const isOnline = data.online === true && 
+                        data.inQueue === true &&  // Must be in queue!
+                        (Date.now() - data.lastSeen < 30000);
+        return isOnline;
+      }
+      return false;
     } catch (error) {
-        console.error('Error checking player online:', error);
-        return false;
+      console.error('Error checking player online:', error);
+      return false;
     }
-}
+  }
 
   /**
-   * Clean up old online statuses
+   * Check if player is online (basic check)
    */
-async cleanupOfflinePlayers(): Promise<void> {
+  async isPlayerOnline(uid: string): Promise<boolean> {
     try {
-        const onlineRef = ref(db, 'online');
-        const snapshot = await get(onlineRef);
+      const onlineRef = ref(db, `online/${uid}`);
+      const snapshot = await get(onlineRef);
 
-        if (snapshot.exists()) {
-            const now = Date.now();
-            const updates: any = {};
-
-            snapshot.forEach((child) => {
-                const data = child.val();
-                // Increase to 2 minutes (120000 ms) for cleanup
-                if (now - data.lastSeen > 120000) { 
-                    updates[`${child.key}/online`] = false;
-                }
-            });
-
-            if (Object.keys(updates).length > 0) {
-                await update(ref(db, 'online'), updates);
-            }
-        }
+      if (snapshot.exists()) {
+        const data = snapshot.val();
+        const isOnline = data.online === true && (Date.now() - data.lastSeen < 30000);
+        return isOnline;
+      }
+      return false;
     } catch (error) {
-        console.error('Error cleaning up offline players:', error);
+      console.error('Error checking player online:', error);
+      return false;
     }
-}
+  }
+
+  /**
+   * Clean up old online statuses - only remove if not in queue
+   */
+  async cleanupOfflinePlayers(): Promise<void> {
+    try {
+      const onlineRef = ref(db, 'online');
+      const snapshot = await get(onlineRef);
+
+      if (snapshot.exists()) {
+        const now = Date.now();
+        const updates: any = {};
+
+        snapshot.forEach((child) => {
+          const data = child.val();
+          // Only clean up if not seen for a while AND not in queue
+          if (now - data.lastSeen > 60000 && !data.inQueue) {
+            updates[`${child.key}/online`] = false;
+          }
+        });
+
+        if (Object.keys(updates).length > 0) {
+          await update(ref(db, 'online'), updates);
+        }
+      }
+    } catch (error) {
+      console.error('Error cleaning up offline players:', error);
+    }
+  }
+
+  // =========== MATCHMAKING ===========
 
   /**
    * Join Checkers matchmaking queue
    */
-// In checkersMultiplayer.ts, update the joinQueue method:
-
-async joinQueue(uid: string, username: string, displayName: string, avatar: string = 'default'): Promise<void> {
+  async joinQueue(uid: string, username: string, displayName: string, avatar: string = 'default'): Promise<void> {
     // Guard against undefined uid
     if (!uid) {
-        console.error('❌ Cannot join queue: uid is undefined');
-        return;
+      console.error('❌ Cannot join queue: uid is undefined');
+      return;
     }
 
     console.log(`🎮 ${username} (${uid}) joined checkers matchmaking queue`);
@@ -150,17 +190,17 @@ async joinQueue(uid: string, username: string, displayName: string, avatar: stri
     // IMPORTANT: Clean up any existing lobbies for this player
     await this.cleanupPlayerLobbies(uid);
 
-    // Set online and queue status
-    await this.setPlayerOnline(uid, true);
-    await this.setPlayerQueueStatus(uid, true);
+    // Set online and queue status - following Ball Crush pattern
+    await this.setPlayerOnline(uid, true);     // This resets inQueue to false
+    await this.setPlayerQueueStatus(uid, true); // Then set inQueue to true
 
     const queueData = {
-        uid,
-        username,
-        displayName: displayName || username,
-        avatar: avatar || 'default',
-        joinedAt: Date.now(),
-        gameId: 'checkers'
+      uid,
+      username,
+      displayName: displayName || username,
+      avatar: avatar || 'default',
+      joinedAt: Date.now(),
+      gameId: 'checkers'
     };
 
     await set(ref(db, `matchmaking/checkers/${uid}`), queueData);
@@ -170,39 +210,8 @@ async joinQueue(uid: string, username: string, displayName: string, avatar: stri
 
     // Try to find a match immediately
     await this.findMatch();
-}
+  }
 
-/**
- * Clean up any existing lobbies for this player
- */
-private async cleanupPlayerLobbies(uid: string): Promise<void> {
-    try {
-        const lobbiesRef = ref(db, 'lobbies');
-        const snapshot = await get(lobbiesRef);
-        
-        if (!snapshot.exists()) return;
-        
-        const lobbies = snapshot.val();
-        const now = Date.now();
-        
-        for (const [lobbyId, lobbyData] of Object.entries(lobbies)) {
-            const lobby = lobbyData as any;
-            
-            // Check if this lobby contains the player
-            if (lobby.playerIds && lobby.playerIds.includes(uid)) {
-                // If lobby is waiting and only has this player, delete it
-                if (lobby.status === 'waiting' && lobby.playerIds.length === 1) {
-                    console.log(`🗑️ Cleaning up old lobby for player: ${lobbyId}`);
-                    await remove(ref(db, `lobbies/${lobbyId}`));
-                }
-                // Also remove any match notifications for this player
-                await remove(ref(db, `matches/${uid}`));
-            }
-        }
-    } catch (error) {
-        console.error('Error cleaning up player lobbies:', error);
-    }
-}
   /**
    * Leave matchmaking queue
    */
@@ -217,7 +226,7 @@ private async cleanupPlayerLobbies(uid: string): Promise<void> {
   /**
    * Find a match for waiting players
    */
-private async findMatch(): Promise<void> {
+  private async findMatch(): Promise<void> {
     const queueRef = ref(db, 'matchmaking/checkers');
     const snapshot = await get(queueRef);
 
@@ -227,41 +236,80 @@ private async findMatch(): Promise<void> {
     const players = Object.values(queue) as any[];
 
     // Add a small delay to ensure players are properly registered
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // Filter out offline players - but be more lenient
+    // Filter out players who are not online AND in queue
     const onlinePlayers = [];
     for (const player of players) {
-        const isOnline = await this.isPlayerOnline(player.uid);
-        // Log the status for debugging
-        console.log(`📊 Player ${player.username} online status:`, isOnline);
-        
-        if (isOnline) {
-            onlinePlayers.push(player);
-        } else {
-            // Don't remove immediately - just log
-            console.log(`⚠️ Player ${player.username} appears offline, but keeping in queue`);
-            onlinePlayers.push(player); // Keep them anyway for now
-        }
+      const isOnline = await this.isPlayerOnlineAndInQueue(player.uid);
+      console.log(`📊 Player ${player.username} online status:`, isOnline);
+      
+      if (isOnline) {
+        onlinePlayers.push(player);
+      } else {
+        // Remove offline players from queue
+        console.log(`🗑️ Removing player ${player.username} from queue (not online/in queue)`);
+        await remove(ref(db, `matchmaking/checkers/${player.uid}`));
+      }
     }
 
     if (onlinePlayers.length < 2) return;
 
-    // Sort by join time
+    // Sort by join time (oldest first)
     onlinePlayers.sort((a, b) => a.joinedAt - b.joinedAt);
 
     // Take first 2 players
     const player1 = onlinePlayers[0];
     const player2 = onlinePlayers[1];
 
+    // Make sure they're different players
     if (player1.uid === player2.uid) {
-        console.log('⚠️ Same player found twice, skipping');
-        return;
+      console.log('⚠️ Same player found twice, removing duplicate');
+      await remove(ref(db, `matchmaking/checkers/${player1.uid}`));
+      return;
     }
 
-    console.log(`✅ Match found: ${player1.username} vs ${player2.username}`);
+    console.log(`✅ Match found: ${player1.username} vs ${player2.username} in checkers`);
+
+    // Create lobby for these players
     await this.createLobby(player1.uid, player2.uid, player1, player2);
-}
+
+    // Remove them from queue
+    await remove(ref(db, `matchmaking/checkers/${player1.uid}`));
+    await remove(ref(db, `matchmaking/checkers/${player2.uid}`));
+  }
+
+  /**
+   * Clean up any existing lobbies for this player
+   */
+  private async cleanupPlayerLobbies(uid: string): Promise<void> {
+    try {
+      const lobbiesRef = ref(db, 'lobbies');
+      const snapshot = await get(lobbiesRef);
+      
+      if (!snapshot.exists()) return;
+      
+      const lobbies = snapshot.val();
+      const now = Date.now();
+      
+      for (const [lobbyId, lobbyData] of Object.entries(lobbies)) {
+        const lobby = lobbyData as any;
+        
+        // Check if this lobby contains the player
+        if (lobby.playerIds && lobby.playerIds.includes(uid)) {
+          // If lobby is waiting and only has this player, delete it
+          if (lobby.status === 'waiting' && lobby.playerIds.length === 1) {
+            console.log(`🗑️ Cleaning up old lobby for player: ${lobbyId}`);
+            await remove(ref(db, `lobbies/${lobbyId}`));
+          }
+          // Also remove any match notifications for this player
+          await remove(ref(db, `matches/${uid}`));
+        }
+      }
+    } catch (error) {
+      console.error('Error cleaning up player lobbies:', error);
+    }
+  }
 
   // =========== LOBBY MANAGEMENT ===========
 
@@ -287,8 +335,8 @@ private async findMatch(): Promise<void> {
           displayName: player1Data.displayName || player1Data.username || 'Player 1',
           avatar: player1Data.avatar || 'default',
           isReady: false,
-          position: { x: 100, y: 550 }, // Player 1 at bottom
-          color: 'red' // Player 1 is red
+          position: { x: 100, y: 550 }, // Player 1 at bottom (red)
+          color: 'red'
         },
         [player2Uid]: {
           uid: player2Uid,
@@ -296,8 +344,8 @@ private async findMatch(): Promise<void> {
           displayName: player2Data.displayName || player2Data.username || 'Player 2',
           avatar: player2Data.avatar || 'default',
           isReady: false,
-          position: { x: 260, y: 50 }, // Player 2 at top
-          color: 'black' // Player 2 is black
+          position: { x: 260, y: 50 }, // Player 2 at top (black)
+          color: 'black'
         }
       },
       playerIds: [player1Uid, player2Uid],

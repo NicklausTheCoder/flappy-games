@@ -1,746 +1,748 @@
-// src/scenes/ball-crush/BallCrushGameScene.ts
+// src/scenes/checkers/CheckersSocketTestScene.ts
 import Phaser from 'phaser';
-import { ballCrushMultiplayer, BallCrushLobby } from '../firebase/ballCrushMultiplayer';
+import { io, Socket } from 'socket.io-client';
 
-export class BallCrushGameScene extends Phaser.Scene {
-  private username: string = '';
-  private uid: string = '';
-  private lobbyId: string = '';
-  private lobby: BallCrushLobby | null = null;
-  
-  // Game objects
-  private playerPaddle!: Phaser.GameObjects.Image;
-  private opponentPaddle!: Phaser.GameObjects.Image;
-  private ball!: Phaser.GameObjects.Image;
-  
-  // UI Elements
-  private playerHealthBars: Phaser.GameObjects.Image[] = [];
-  private opponentHealthBars: Phaser.GameObjects.Image[] = [];
-  private scoreText!: Phaser.GameObjects.Text;
-  
-  // FPS Counter
-  private fpsText!: Phaser.GameObjects.Text;
-  private pingText!: Phaser.GameObjects.Text;
-  private lastFpsUpdate: number = 0;
-  private framesThisSecond: number = 0;
-  private currentFps: number = 0;
-  
-  // Ping measurement
-  private pingStartTime: number = 0;
-  private currentPing: number = 0;
-  private pingInterval: number = 2000; // Check ping every 2 seconds
-  
+export class CheckersSocketTestScene extends Phaser.Scene {
+  // Socket connection
+  private socket: Socket | null = null;
+  private roomId: string = '';
+  private myColor: 'red' | 'black' = 'red';
+  private isHost: boolean = true;
+  private opponentName: string = 'Opponent';
+
   // Game state
-  private gameActive: boolean = true;
-  private ballSpeed: number = 200;
-  private ballDirection: Phaser.Math.Vector2;
-  
-  // Network
-  private isOnline: boolean = true;
-  private isHost: boolean = false;
-  private isPlayer1: boolean = false;
-  private unsubscribeLobby: (() => void) | null = null;
-  private unsubscribeBall: (() => void) | null = null;
-  private lastSentPosition: number = 0;
-  private sendRate: number = 30; // Send position ~33 times per second (optimized)
-  
-  // Prediction variables for opponent movement
-  private lastOpponentX: number = 180;
-  private opponentVelocity: number = 0;
-  private lastUpdateTime: number = 0;
-  
-  // Controls
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private moveSpeed: number = 5;
-  
-  // Add this flag to prevent double initialization
-  private static isInitializing: boolean = false;
-  
+  private board: (string | null)[][] = [];
+  private currentPlayer: 'red' | 'black' = 'red';
+  private myTurn: boolean = false;
+  private gameActive: boolean = false;
+
+  // Move tracking
+  private selectedPiece: { row: number; col: number } | null = null;
+  private validMoves: { row: number; col: number }[] = [];
+  private movesCount: number = 0;
+  private piecesCapturedCount: number = 0;
+  private kingsMadeCount: number = 0;
+  private gameStartTime: number = 0;
+
+  // Visual elements
+  private squares: Phaser.GameObjects.Rectangle[][] = [];
+  private pieces: (Phaser.GameObjects.Image | null)[][] = [];
+  private turnText!: Phaser.GameObjects.Text;
+  private messageText!: Phaser.GameObjects.Text;
+  private opponentText!: Phaser.GameObjects.Text;
+
+  // Constants
+  private readonly BOARD_SIZE = 8;
+  private readonly SQUARE_SIZE = 38;
+  private readonly BOARD_OFFSET_X = 28;
+  private readonly BOARD_OFFSET_Y = 100;
+
   constructor() {
-    super({ key: 'BallCrushGameScene' });
-    this.ballDirection = new Phaser.Math.Vector2(1, 1).normalize();
+    super({ key: 'CheckersSocketTestScene' });
   }
-  
-  init(data: { username: string; uid: string; lobbyId: string }) {
-    // Prevent double initialization
-    if (BallCrushGameScene.isInitializing) {
-      console.log('⚠️ BallCrushGameScene already initializing, skipping...');
-      return;
-    }
-    
-    BallCrushGameScene.isInitializing = true;
-    
-    this.username = data.username || 'Player';
-    this.uid = data.uid || '';
-    this.lobbyId = data.lobbyId || '';
-    
-    console.log('⚽ BallCrushGameScene started for:', this.username);
-    console.log('📡 Online mode: true Lobby:', this.lobbyId);
-  }
-  
-  async create() {
-    // Get lobby data first
-    await this.getLobbyData();
-    
-    if (!this.lobby) {
-      console.error('❌ No lobby data found');
-      this.scene.start('CookieScene', { username: this.username, uid: this.uid });
-      return;
-    }
-    
-    // Determine player roles
-    const playerIds = Object.keys(this.lobby.players);
-    this.isPlayer1 = playerIds[0] === this.uid;
-    this.isHost = playerIds[0] === this.uid; // Player 1 is host
-    
-    console.log('🎮 Player role:', this.isPlayer1 ? 'Player 1 (Bottom)' : 'Player 2 (Top)');
-    console.log('🎮 Is host:', this.isHost);
-    
-    // Enable physics
-    this.physics.world.setBounds(0, 0, 360, 640);
-    this.physics.world.gravity.y = 0;
-    
-    // Background
-    if (this.textures.exists('ball-background')) {
-      const bg = this.add.image(180, 320, 'ball-background');
-      bg.setDisplaySize(360, 640);
-      bg.setDepth(-1);
-    } else {
-      this.cameras.main.setBackgroundColor('#1a3a1a');
-    }
-    
-    // Add background effects
-    this.addBackgroundEffects();
-    
-    // Create paddles based on player role
-    this.createPaddles();
-    
-    // Create ball
-    this.createBall();
-    
-    // Create UI
-    this.createUI();
-    
-    // Set up input
-    this.setupInput();
-    
-    // Set up Firebase listeners
-    this.setupFirebaseListeners();
-    
-    // Start the game
+
+  init(data: { 
+    roomId: string;
+    myColor: 'red' | 'black';
+    isHost: boolean;
+    opponentName?: string;
+    socket?: Socket;
+  }) {
+    console.log('🎮 CheckersSocketTestScene initialized:', data);
+
+    this.roomId = data.roomId;
+    this.myColor = data.myColor;
+    this.isHost = data.isHost;
+    this.opponentName = data.opponentName || 'Opponent';
+    this.socket = data.socket || null;
+
+    // Red always starts
+    this.currentPlayer = 'red';
+    this.myTurn = (this.currentPlayer === this.myColor);
+    this.gameStartTime = Date.now();
     this.gameActive = true;
-    
-    // Host sets initial ball direction
+
+    console.log('👤 Playing as:', this.myColor);
+    console.log('👥 Opponent:', this.opponentName);
+    console.log('🎯 My turn?', this.myTurn);
+  }
+
+  preload() {
+    this.load.image('red_normal', 'assets/checkers/red_normal.png');
+    this.load.image('red_king', 'assets/checkers/red_king.png');
+    this.load.image('black_normal', 'assets/checkers/black_normal.png');
+    this.load.image('black_king', 'assets/checkers/black_king.png');
+  }
+
+  create() {
+    console.log('🎮 Creating online checkers game...');
+
+    this.cameras.main.setBackgroundColor('#2a2a2a');
+
+    this.initializeBoard();
+    this.createBoard();
+    this.createUI();
+    this.setupSocketListeners();
+
+    // If host, place initial pieces
     if (this.isHost) {
-      console.log('🎯 Host setting initial ball direction');
-      this.setInitialBallDirection();
-    }
-    
-    this.lastUpdateTime = time;
-    
-    // Start ping measurement
-    this.startPingMeasurement();
-  }
-  
-  private createUI() {
-    // Health bars for player (always green)
-    const playerStartX = 80;
-    for (let i = 0; i < 5; i++) {
-      const healthBar = this.add.image(playerStartX + (i * 40), this.isPlayer1 ? 620 : 20, 'ball');
-      healthBar.setScale(0.1);
-      healthBar.setTint(0x00ff00);
-      this.playerHealthBars.push(healthBar);
-    }
-    
-    // Health bars for opponent (always red)
-    const opponentStartX = 80;
-    for (let i = 0; i < 5; i++) {
-      const healthBar = this.add.image(opponentStartX + (i * 40), this.isPlayer1 ? 20 : 620, 'ball');
-      healthBar.setScale(0.1);
-      healthBar.setTint(0xff0000);
-      this.opponentHealthBars.push(healthBar);
-    }
-    
-    // Score in middle
-    this.scoreText = this.add.text(180, 300, '0 - 0', {
-      fontSize: '24px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
-    }).setOrigin(0.5);
-    
-    // Instructions
-    this.add.text(180, 560, 'Move with ← → arrows or touch', {
-      fontSize: '12px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-    
-    // FPS Counter (top left)
-    this.fpsText = this.add.text(10, 10, 'FPS: 0', {
-      fontSize: '14px',
-      color: '#00ff00',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 2
-    });
-    
-    // Ping Counter (top right)
-    this.pingText = this.add.text(280, 10, 'Ping: 0ms', {
-      fontSize: '14px',
-      color: '#ffff00',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 2
-    });
-  }
-  
-  private startPingMeasurement() {
-    // Measure ping by writing a timestamp to Firebase and reading it back
-    const pingRef = ref(db, `pings/${this.lobbyId}/${this.uid}`);
-    
-    setInterval(() => {
-      if (!this.gameActive) return;
-      
-      this.pingStartTime = Date.now();
-      set(pingRef, {
-        timestamp: this.pingStartTime,
-        sender: this.uid
+      this.placeInitialPieces();
+      // Send board state to server
+      this.socket?.emit('syncGameState', {
+        roomId: this.roomId,
+        board: this.board,
+        currentPlayer: this.currentPlayer
       });
-    }, this.pingInterval);
-    
-    // Listen for our own ping to come back
-    onValue(pingRef, (snapshot) => {
-      if (snapshot.exists() && this.pingStartTime > 0) {
-        const data = snapshot.val();
-        if (data.sender === this.uid) {
-          const receiveTime = Date.now();
-          this.currentPing = receiveTime - data.timestamp;
-          this.pingText.setText(`Ping: ${this.currentPing}ms`);
+    } else {
+      // Joiner waits for board state from host
+      this.messageText.setText('Waiting for host to start game...');
+      this.socket?.emit('requestGameState', { roomId: this.roomId });
+    }
+  }
+
+  private setupSocketListeners() {
+    if (!this.socket) {
+      console.error('❌ No socket connection');
+      return;
+    }
+
+    this.socket.on('gameStateSync', (data: any) => {
+      console.log('📥 Game state sync received!');
+      this.board = data.board;
+      this.currentPlayer = data.currentPlayer;
+      this.myTurn = (this.currentPlayer === this.myColor);
+      this.gameActive = true;
+
+      this.redrawBoard();
+      this.updateTurnText();
+      this.messageText.setText('Game started! Make a move');
+    });
+
+    this.socket.on('opponentMove', (data: any) => {
+      console.log('📥 Opponent move received:', data);
+      
+      // Remove captured piece if any
+      if (data.capturedPiece) {
+        this.removePiece(data.capturedPiece.row, data.capturedPiece.col);
+        // Update board array
+        if (this.board[data.capturedPiece.row] && this.board[data.capturedPiece.row][data.capturedPiece.col]) {
+          this.board[data.capturedPiece.row][data.capturedPiece.col] = null;
+        }
+      }
+      
+      // Animate the move
+      this.animateOpponentMove(data.fromRow, data.fromCol, data.toRow, data.toCol);
+      
+      // Update board array
+      const pieceType = this.board[data.fromRow][data.fromCol];
+      if (pieceType) {
+        this.board[data.toRow][data.toCol] = pieceType;
+        this.board[data.fromRow][data.fromCol] = null;
+      }
+      
+      // Check for king promotion
+      if (data.promoted) {
+        const color = data.playerColor === 'red' ? 'red' : 'black';
+        this.board[data.toRow][data.toCol] = `king_${color}`;
+        this.updatePieceTexture(data.toRow, data.toCol, true);
+        this.kingsMadeCount++;
+      }
+      
+      // Update game state
+      this.currentPlayer = data.currentPlayer;
+      this.myTurn = (this.currentPlayer === this.myColor);
+      this.updateTurnText();
+      this.deselectPiece();
+      this.updatePieceInteractivity();
+    });
+
+    this.socket.on('moveConfirmed', (data: any) => {
+      console.log('✅ Move confirmed by server');
+      
+      // Remove captured piece if any
+      if (data.capturedPiece) {
+        this.removePiece(data.capturedPiece.row, data.capturedPiece.col);
+        if (this.board[data.capturedPiece.row] && this.board[data.capturedPiece.row][data.capturedPiece.col]) {
+          this.board[data.capturedPiece.row][data.capturedPiece.col] = null;
+        }
+      }
+      
+      // Update with server's board state
+      if (data.newBoard) {
+        this.board = data.newBoard;
+        this.redrawBoard();
+      }
+      
+      // Check for promotion
+      if (data.promoted && !this.board[data.toRow][data.toCol]?.includes('king')) {
+        const color = data.playerColor === 'red' ? 'red' : 'black';
+        this.board[data.toRow][data.toCol] = `king_${color}`;
+        this.updatePieceTexture(data.toRow, data.toCol, true);
+        this.kingsMadeCount++;
+      }
+      
+      this.currentPlayer = data.currentPlayer;
+      this.myTurn = (this.currentPlayer === this.myColor);
+      this.updateTurnText();
+      this.updatePieceInteractivity();
+    });
+
+    this.socket.on('gameOver', (data: any) => {
+      console.log('🏁 Game over:', data);
+      this.gameActive = false;
+      this.showGameOver(data.message);
+    });
+
+    this.socket.on('opponentDisconnected', () => {
+      console.log('⚠️ Opponent disconnected');
+      this.messageText.setText('Opponent disconnected');
+      this.gameActive = false;
+      this.time.delayedCall(3000, () => {
+        this.scene.start('CheckersStartScene');
+      });
+    });
+
+    this.socket.on('disconnect', () => {
+      console.log('🔌 Disconnected from server');
+      this.messageText.setText('Connection lost');
+      this.gameActive = false;
+    });
+  }
+
+  private initializeBoard() {
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      this.board[row] = [];
+      this.squares[row] = [];
+      this.pieces[row] = [];
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        this.board[row][col] = null;
+        this.pieces[row][col] = null;
+      }
+    }
+  }
+
+  private createBoard() {
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE;
+        const y = this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE;
+
+        const isPlayable = (row + col) % 2 === 1;
+        const color = isPlayable ? 0x8b4513 : 0xdeb887;
+
+        const square = this.add.rectangle(
+          x + this.SQUARE_SIZE / 2,
+          y + this.SQUARE_SIZE / 2,
+          this.SQUARE_SIZE,
+          this.SQUARE_SIZE,
+          color
+        );
+
+        square.setStrokeStyle(1, 0x000000);
+        this.squares[row][col] = square;
+
+        if (isPlayable) {
+          square.setInteractive({ useHandCursor: true });
+          square.on('pointerdown', () => this.onSquareClick(row, col));
+        }
+      }
+    }
+
+    this.addCoordinates();
+  }
+
+  private addCoordinates() {
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      this.add.text(
+        this.BOARD_OFFSET_X - 18,
+        this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE + this.SQUARE_SIZE / 2 - 8,
+        (8 - row).toString(),
+        { fontSize: '12px', color: '#ffffff' }
+      );
+    }
+
+    const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    for (let col = 0; col < this.BOARD_SIZE; col++) {
+      this.add.text(
+        this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2 - 6,
+        this.BOARD_OFFSET_Y - 20,
+        letters[col],
+        { fontSize: '12px', color: '#ffffff' }
+      );
+    }
+  }
+
+  private createUI() {
+    // Opponent info
+    this.opponentText = this.add.text(180, 20, `vs ${this.opponentName}`, {
+      fontSize: '14px',
+      color: '#aaaaaa'
+    }).setOrigin(0.5);
+
+    // Turn indicator
+    this.turnText = this.add.text(180, 540, '', {
+      fontSize: '16px',
+      color: '#ffffff',
+      fontStyle: 'bold'
+    }).setOrigin(0.5);
+
+    // Message area
+    this.messageText = this.add.text(180, 570, '', {
+      fontSize: '12px',
+      color: '#ffff00'
+    }).setOrigin(0.5);
+
+    // Resign button
+    const resignBtn = this.add.text(300, 10, '🏳️ RESIGN', {
+      fontSize: '14px',
+      color: '#ffffff',
+      backgroundColor: '#f44336',
+      padding: { x: 8, y: 4 }
+    })
+      .setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => this.resign());
+  }
+
+  private placeInitialPieces() {
+    console.log('Placing initial pieces...');
+    this.gameActive = true;
+    this.currentPlayer = 'red';
+    this.myTurn = (this.myColor === 'red');
+
+    // Place black pieces (top)
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        if ((row + col) % 2 === 1) {
+          this.createPiece(row, col, 'black', false);
+          this.board[row][col] = 'black';
+        }
+      }
+    }
+
+    // Place red pieces (bottom)
+    for (let row = 5; row < 8; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        if ((row + col) % 2 === 1) {
+          this.createPiece(row, col, 'red', false);
+          this.board[row][col] = 'red';
+        }
+      }
+    }
+
+    this.updateTurnText();
+  }
+
+  private redrawBoard() {
+    // Clear existing pieces
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        if (this.pieces[row]?.[col]) {
+          this.pieces[row][col]?.destroy();
+          this.pieces[row][col] = null;
+        }
+      }
+    }
+
+    // Create pieces from board state
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        const piece = this.board[row][col];
+        if (piece) {
+          const isKing = piece.includes('king');
+          const color = piece.includes('red') ? 'red' : 'black';
+          this.createPiece(row, col, color, isKing);
+        }
+      }
+    }
+
+    this.updatePieceInteractivity();
+  }
+
+  private createPiece(row: number, col: number, color: 'red' | 'black', isKing: boolean) {
+    const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+    const y = this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+
+    const texture = isKing ? `${color}_king` : `${color}_normal`;
+    const piece = this.add.image(x, y, texture);
+    piece.setDisplaySize(this.SQUARE_SIZE * 0.8, this.SQUARE_SIZE * 0.8);
+    piece.setData('row', row);
+    piece.setData('col', col);
+
+    // Make MY pieces interactive
+    if (color === this.myColor && this.gameActive && this.myTurn) {
+      piece.setInteractive({ useHandCursor: true });
+      piece.on('pointerdown', () => this.onPieceClick(row, col));
+      piece.on('pointerover', () => piece.setTint(0xffffaa));
+      piece.on('pointerout', () => piece.clearTint());
+    } else {
+      piece.disableInteractive();
+    }
+
+    this.pieces[row][col] = piece;
+  }
+
+  private updatePieceTexture(row: number, col: number, isKing: boolean) {
+    const piece = this.pieces[row][col];
+    if (!piece) return;
+
+    const color = this.board[row][col]?.includes('red') ? 'red' : 'black';
+    const texture = isKing ? `${color}_king` : `${color}_normal`;
+    piece.setTexture(texture);
+    piece.setDisplaySize(this.SQUARE_SIZE * 0.8, this.SQUARE_SIZE * 0.8);
+  }
+
+  private onPieceClick(row: number, col: number) {
+    if (!this.gameActive || !this.myTurn) return;
+    const piece = this.board[row][col];
+    if (piece && piece.includes(this.myColor)) {
+      this.selectPiece(row, col);
+    }
+  }
+
+  private onSquareClick(row: number, col: number) {
+    if (!this.gameActive || !this.myTurn || !this.selectedPiece) return;
+    this.tryMove(this.selectedPiece.row, this.selectedPiece.col, row, col);
+  }
+
+  private selectPiece(row: number, col: number) {
+    this.deselectPiece();
+    this.selectedPiece = { row, col };
+    this.validMoves = this.getValidMoves(row, col);
+    this.highlightValidMoves();
+    this.messageText.setText(`Selected ${this.getSquareName(row, col)}`);
+  }
+
+  private deselectPiece() {
+    this.selectedPiece = null;
+    this.clearHighlights();
+    this.validMoves = [];
+  }
+
+  private getValidMoves(row: number, col: number): { row: number; col: number }[] {
+    const moves: { row: number; col: number }[] = [];
+    const piece = this.board[row][col];
+
+    if (!piece) return moves;
+
+    const isKing = piece.includes('king');
+    const isRed = piece.includes('red');
+
+    // King can move any number of squares diagonally
+    if (isKing) {
+      const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+      
+      for (const [rowDir, colDir] of directions) {
+        let steps = 1;
+        while (true) {
+          const newRow = row + rowDir * steps;
+          const newCol = col + colDir * steps;
           
-          // Color code ping
-          if (this.currentPing < 50) {
-            this.pingText.setColor('#00ff00'); // Green - good
-          } else if (this.currentPing < 100) {
-            this.pingText.setColor('#ffff00'); // Yellow - okay
-          } else if (this.currentPing < 200) {
-            this.pingText.setColor('#ff9900'); // Orange - slow
+          if (!this.isValidSquare(newRow, newCol)) break;
+          
+          const targetPiece = this.board[newRow][newCol];
+          
+          if (!targetPiece) {
+            moves.push({ row: newRow, col: newCol });
+            steps++;
           } else {
-            this.pingText.setColor('#ff0000'); // Red - bad
+            const isOpponent = targetPiece.includes(isRed ? 'black' : 'red');
+            if (isOpponent) {
+              const jumpRow = newRow + rowDir;
+              const jumpCol = newCol + colDir;
+              if (this.isValidSquare(jumpRow, jumpCol) && !this.board[jumpRow][jumpCol]) {
+                moves.push({ row: jumpRow, col: jumpCol });
+              }
+            }
+            break;
           }
         }
       }
-    });
-  }
-  
-  private async getLobbyData() {
-    try {
-      this.lobby = await ballCrushMultiplayer.getLobby(this.lobbyId);
-      console.log('📊 Lobby data:', this.lobby);
-    } catch (error) {
-      console.error('❌ Error getting lobby data:', error);
-    }
-  }
-  
-  private createPaddles() {
-    if (!this.lobby) return;
-    
-    const playerIds = Object.keys(this.lobby.players);
-    const myData = this.lobby.players[this.uid];
-    const opponentId = playerIds.find(id => id !== this.uid) || '';
-    const opponentData = this.lobby.players[opponentId];
-    
-    if (!myData || !opponentData) {
-      console.error('❌ Missing player data');
-      return;
-    }
-    
-    // Always create both paddles
-    // Bottom paddle (Player 1)
-    const bottomPaddle = this.physics.add.image(180, 550, 'player');
-    bottomPaddle.setScale(0.15);
-    
-    // Top paddle (Player 2)
-    const topPaddle = this.physics.add.image(180, 50, 'player');
-    topPaddle.setScale(0.15);
-    topPaddle.setFlipY(true);
-    
-    // Assign based on player role
-    if (this.isPlayer1) {
-      // I am Player 1 - I control bottom paddle
-      this.playerPaddle = bottomPaddle;
-      this.opponentPaddle = topPaddle;
-      
-      // Names
-      this.add.text(180, 590, 'YOU', {
-        fontSize: '14px',
-        color: '#ffffff',
-        stroke: '#000000',
-        strokeThickness: 2
-      }).setOrigin(0.5);
-      
-      this.add.text(180, 30, opponentData.displayName, {
-        fontSize: '12px',
-        color: '#ff4444',
-        stroke: '#000000',
-        strokeThickness: 2
-      }).setOrigin(0.5);
-      
     } else {
-      // I am Player 2 - I control top paddle
-      this.playerPaddle = topPaddle;
-      this.opponentPaddle = bottomPaddle;
+      // Regular pieces: can only move 1 square forward, or capture 2 squares forward
+      const directions = isRed ? [[-1, -1], [-1, 1]] : [[1, -1], [1, 1]];
       
-      // Names
-      this.add.text(180, 30, 'YOU', {
-        fontSize: '14px',
-        color: '#ffffff',
-        stroke: '#000000',
-        strokeThickness: 2
-      }).setOrigin(0.5);
-      
-      this.add.text(180, 590, opponentData.displayName, {
-        fontSize: '12px',
-        color: '#44ff44',
-        stroke: '#000000',
-        strokeThickness: 2
-      }).setOrigin(0.5);
+      for (const [rowDir, colDir] of directions) {
+        // Regular move (1 step)
+        const newRow = row + rowDir;
+        const newCol = col + colDir;
+        if (this.isValidSquare(newRow, newCol) && !this.board[newRow][newCol]) {
+          moves.push({ row: newRow, col: newCol });
+        }
+        
+        // Capture move (2 steps)
+        const jumpRow = row + rowDir * 2;
+        const jumpCol = col + colDir * 2;
+        const midRow = row + rowDir;
+        const midCol = col + colDir;
+        
+        if (this.isValidSquare(jumpRow, jumpCol) && !this.board[jumpRow][jumpCol]) {
+          const midPiece = this.board[midRow][midCol];
+          if (midPiece) {
+            const isOpponent = midPiece.includes(isRed ? 'black' : 'red');
+            if (isOpponent) {
+              moves.push({ row: jumpRow, col: jumpCol });
+            }
+          }
+        }
+      }
     }
-    
-    // Configure physics bodies for both paddles
-    const playerBody = this.playerPaddle.body as Phaser.Physics.Arcade.Body;
-    playerBody.setSize(40, 20);
-    playerBody.setCollideWorldBounds(true);
-    playerBody.setImmovable(true);
-    
-    const opponentBody = this.opponentPaddle.body as Phaser.Physics.Arcade.Body;
-    opponentBody.setSize(40, 20);
-    opponentBody.setCollideWorldBounds(true);
-    opponentBody.setImmovable(true);
-    
-    // Set initial positions from lobby
-    this.playerPaddle.x = myData.position.x;
-    this.opponentPaddle.x = opponentData.position.x;
-    this.lastOpponentX = opponentData.position.x;
+
+    return moves;
   }
-  
-  private createBall() {
-    if (!this.textures.exists('ball')) {
-      console.error('❌ Ball texture not found');
+
+  private isValidSquare(row: number, col: number): boolean {
+    return row >= 0 && row < 8 && col >= 0 && col < 8;
+  }
+
+  private tryMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
+    const isValid = this.validMoves.some(move => move.row === toRow && move.col === toCol);
+    if (!isValid) {
+      this.messageText.setText('❌ Invalid move!');
+      this.squares[toRow][toCol].setFillStyle(0xff4444, 0.5);
+      this.time.delayedCall(300, () => {
+        this.squares[toRow][toCol].setFillStyle((toRow + toCol) % 2 === 1 ? 0x8b4513 : 0xdeb887);
+      });
       return;
     }
-    
-    this.ball = this.physics.add.image(180, 300, 'ball');
-    this.ball.setScale(0.15);
-    
-    const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
-    ballBody.setCircle(12);
-    ballBody.setCollideWorldBounds(true);
-    ballBody.setBounce(1, 1);
-    
-    // Add collision with paddles
-    this.physics.add.collider(this.ball, this.playerPaddle, this.hitPlayerPaddle, undefined, this);
-    this.physics.add.collider(this.ball, this.opponentPaddle, this.hitOpponentPaddle, undefined, this);
-    
-    // Trail effect
-    this.add.particles(0, 0, 'ball', {
-      scale: { start: 0.08, end: 0.02 },
-      alpha: { start: 0.3, end: 0 },
-      lifespan: 300,
-      frequency: 50,
-      follow: this.ball,
-      tint: 0xffaa00
-    });
-  }
-  
-  private setupInput() {
-    if (this.input.keyboard) {
-      this.cursors = this.input.keyboard.createCursorKeys();
-    }
-    
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (pointer.isDown && this.playerPaddle && this.gameActive) {
-        this.movePlayer(pointer.x);
-      }
-    });
-    
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.playerPaddle && this.gameActive) {
-        this.movePlayer(pointer.x);
-      }
-    });
-  }
-  
-  private movePlayer(x: number) {
-    if (!this.playerPaddle || !this.gameActive) return;
-    
-    const newX = Phaser.Math.Clamp(x, 30, 330);
-    this.playerPaddle.x = newX;
-  }
-  
-  private setupFirebaseListeners() {
-    if (!this.lobbyId) return;
-    
-    // Listen for lobby updates
-    this.unsubscribeLobby = ballCrushMultiplayer.subscribeToLobby(this.lobbyId, (lobby) => {
-      if (!lobby) {
-        this.handleDisconnect();
-        return;
-      }
+
+    const isCapture = Math.abs(toRow - fromRow) > 1;
+    let capturedPiece = null;
+
+    if (isCapture) {
+      const rowStep = toRow > fromRow ? 1 : -1;
+      const colStep = toCol > fromCol ? 1 : -1;
+      let currentRow = fromRow + rowStep;
+      let currentCol = fromCol + colStep;
       
-      this.lobby = lobby;
-      this.updateFromLobby();
-    });
+      while (currentRow !== toRow && currentCol !== toCol) {
+        if (this.board[currentRow][currentCol]) {
+          capturedPiece = { row: currentRow, col: currentCol };
+          break;
+        }
+        currentRow += rowStep;
+        currentCol += colStep;
+      }
+      this.piecesCapturedCount++;
+      
+      // Immediately remove captured piece visually
+      if (capturedPiece) {
+        this.removePiece(capturedPiece.row, capturedPiece.col);
+        this.board[capturedPiece.row][capturedPiece.col] = null;
+      }
+    }
+
+    const move = {
+      fromRow, fromCol, toRow, toCol, capturedPiece,
+      piece: this.board[fromRow][fromCol],
+      playerColor: this.myColor
+    };
+
+    // Animate the move
+    this.animateOwnMove(fromRow, fromCol, toRow, toCol);
     
-    // If not host, listen for ball updates
-    if (!this.isHost) {
-      this.unsubscribeBall = ballCrushMultiplayer.subscribeToBallUpdates(this.lobbyId, (ballData) => {
-        if (ballData && this.ball && this.gameActive) {
-          // Update ball from host
-          this.ball.x = ballData.x;
-          this.ball.y = ballData.y;
-          this.ballSpeed = ballData.speed;
-          this.ballDirection.set(ballData.direction.x, ballData.direction.y);
-          
-          const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
-          ballBody.setVelocity(
-            ballData.direction.x * ballData.speed,
-            ballData.direction.y * ballData.speed
-          );
+    // Update board array
+    const pieceType = this.board[fromRow][fromCol];
+    this.board[toRow][toCol] = pieceType;
+    this.board[fromRow][fromCol] = null;
+
+    // Check for king promotion
+    const wasPromoted = this.checkKingPromotion(toRow, toCol);
+    if (wasPromoted) {
+      this.updatePieceTexture(toRow, toCol, true);
+      this.kingsMadeCount++;
+    }
+
+    // Send move to server
+    this.socket?.emit('makeMove', { roomId: this.roomId, move });
+    
+    this.movesCount++;
+    this.deselectPiece();
+  }
+
+  private animateOwnMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
+    const piece = this.pieces[fromRow][fromCol];
+    if (!piece) return;
+
+    const targetX = this.BOARD_OFFSET_X + toCol * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+    const targetY = this.BOARD_OFFSET_Y + toRow * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+
+    this.tweens.add({
+      targets: piece,
+      x: targetX,
+      y: targetY,
+      duration: 200,
+      ease: 'Power2',
+      onComplete: () => {
+        this.pieces[toRow][toCol] = piece;
+        this.pieces[fromRow][fromCol] = null;
+      }
+    });
+  }
+
+  private animateOpponentMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
+    const piece = this.pieces[fromRow][fromCol];
+    if (!piece) return;
+
+    const targetX = this.BOARD_OFFSET_X + toCol * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+    const targetY = this.BOARD_OFFSET_Y + toRow * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+
+    this.tweens.add({
+      targets: piece,
+      x: targetX,
+      y: targetY,
+      duration: 200,
+      ease: 'Power2',
+      onComplete: () => {
+        this.pieces[toRow][toCol] = piece;
+        this.pieces[fromRow][fromCol] = null;
+      }
+    });
+  }
+
+  private removePiece(row: number, col: number) {
+    const piece = this.pieces[row][col];
+    if (piece) {
+      this.tweens.add({
+        targets: piece,
+        scale: 0,
+        alpha: 0,
+        duration: 150,
+        onComplete: () => {
+          piece.destroy();
+          this.pieces[row][col] = null;
         }
       });
     }
   }
-  
-  private updateFromLobby() {
-    if (!this.lobby) return;
-    
-    const playerIds = Object.keys(this.lobby.players);
-    const opponentId = playerIds.find(id => id !== this.uid) || '';
-    
-    if (!opponentId) return;
-    
-    // Update opponent position with prediction
-    if (this.opponentPaddle && this.lobby.players[opponentId]) {
-      const targetX = this.lobby.players[opponentId].position.x;
-      const currentTime = Date.now();
-      
-      // Calculate opponent velocity
-      if (this.lastUpdateTime > 0) {
-        const timeDiff = Math.max(1, currentTime - this.lastUpdateTime);
-        this.opponentVelocity = (targetX - this.lastOpponentX) / timeDiff * 16; // Normalize to ~60fps
-      }
-      
-      this.lastOpponentX = targetX;
-      this.lastUpdateTime = currentTime;
-      
-      // Predict next position (predict 100ms ahead)
-      const predictedX = targetX + this.opponentVelocity * 3; // Scale factor for smoothness
-      const clampedPredictedX = Phaser.Math.Clamp(predictedX, 30, 330);
-      
-      // Dynamic interpolation based on distance
-      const distance = Math.abs(clampedPredictedX - this.opponentPaddle.x);
-      
-      if (distance > 20) {
-        // Far away - move quickly
-        this.opponentPaddle.x += (clampedPredictedX - this.opponentPaddle.x) * 0.4;
-      } else if (distance > 5) {
-        // Medium distance - normal speed
-        this.opponentPaddle.x += (clampedPredictedX - this.opponentPaddle.x) * 0.3;
-      } else {
-        // Close - smooth into place
-        this.opponentPaddle.x = Phaser.Math.Linear(this.opponentPaddle.x, targetX, 0.2);
-      }
+
+  private checkKingPromotion(row: number, col: number): boolean {
+    const piece = this.board[row][col];
+    if (!piece) return false;
+
+    if (piece === 'red' && row === 0) {
+      this.board[row][col] = 'king_red';
+      return true;
+    } else if (piece === 'black' && row === 7) {
+      this.board[row][col] = 'king_black';
+      return true;
     }
-    
-    // Update health bars
-    const myHealth = this.lobby.players[this.uid]?.health || 5;
-    const opponentHealth = this.lobby.players[opponentId]?.health || 5;
-    
-    for (let i = 0; i < this.playerHealthBars.length; i++) {
-      this.playerHealthBars[i].setVisible(i < myHealth);
-    }
-    
-    for (let i = 0; i < this.opponentHealthBars.length; i++) {
-      this.opponentHealthBars[i].setVisible(i < opponentHealth);
-    }
-    
-    // Update score
-    const myScore = this.lobby.players[this.uid]?.score || 0;
-    const opponentScore = this.lobby.players[opponentId]?.score || 0;
-    this.scoreText.setText(`${myScore} - ${opponentScore}`);
-    
-    // Check if game ended
-    if (this.lobby.status === 'finished') {
-      this.handleGameOver(this.lobby.winner === this.uid);
-    }
+    return false;
   }
-  
-  private setInitialBallDirection() {
-    // Start ball moving in a random direction
-    const angle = Phaser.Math.Between(0, 360);
-    const rad = Phaser.Math.DegToRad(angle);
-    this.ballDirection.set(Math.cos(rad), Math.sin(rad));
-    
-    const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
-    ballBody.setVelocity(
-      this.ballDirection.x * this.ballSpeed,
-      this.ballDirection.y * this.ballSpeed
-    );
-    
-    // Send initial ball position
-    ballCrushMultiplayer.updateBallPosition(this.lobbyId, {
-      x: this.ball.x,
-      y: this.ball.y,
-      speed: this.ballSpeed,
-      directionX: this.ballDirection.x,
-      directionY: this.ballDirection.y
+
+  private highlightValidMoves() {
+    this.validMoves.forEach(move => {
+      this.squares[move.row][move.col].setFillStyle(0x44ff44, 0.5);
     });
   }
-  
-  private hitPlayerPaddle(ball: any, paddle: any) {
-    if (!this.gameActive || !this.isHost) return;
-    
-    // Visual feedback
-    this.tweens.add({
-      targets: this.playerPaddle,
-      scale: 0.2,
-      duration: 100,
-      yoyo: true
-    });
-    
-    const ballBody = ball.body as Phaser.Physics.Arcade.Body;
-    const hitPosition = (ball.x - paddle.x) / 30;
-    const currentSpeed = Math.sqrt(
-      ballBody.velocity.x * ballBody.velocity.x + 
-      ballBody.velocity.y * ballBody.velocity.y
-    );
-    
-    // Ball should go UP when hitting player paddle
-    ballBody.velocity.x = hitPosition * currentSpeed * 1.2;
-    ballBody.velocity.y = -Math.abs(ballBody.velocity.y) * 1.1;
-    
-    // Normalize speed
-    const newSpeed = Math.sqrt(
-      ballBody.velocity.x * ballBody.velocity.x + 
-      ballBody.velocity.y * ballBody.velocity.y
-    );
-    
-    ballBody.velocity.x = (ballBody.velocity.x / newSpeed) * currentSpeed;
-    ballBody.velocity.y = (ballBody.velocity.y / newSpeed) * currentSpeed;
-    
-    // Update direction
-    this.ballDirection.set(
-      ballBody.velocity.x / currentSpeed,
-      ballBody.velocity.y / currentSpeed
-    );
-    
-    // Increase speed
-    this.ballSpeed = Math.min(this.ballSpeed + 5, 400);
-  }
-  
-  private hitOpponentPaddle(ball: any, paddle: any) {
-    if (!this.gameActive || !this.isHost) return;
-    
-    // Visual feedback
-    this.tweens.add({
-      targets: this.opponentPaddle,
-      scale: 0.2,
-      duration: 100,
-      yoyo: true
-    });
-    
-    const ballBody = ball.body as Phaser.Physics.Arcade.Body;
-    const hitPosition = (ball.x - paddle.x) / 30;
-    const currentSpeed = Math.sqrt(
-      ballBody.velocity.x * ballBody.velocity.x + 
-      ballBody.velocity.y * ballBody.velocity.y
-    );
-    
-    // Ball should go DOWN when hitting opponent paddle
-    ballBody.velocity.x = hitPosition * currentSpeed * 1.2;
-    ballBody.velocity.y = Math.abs(ballBody.velocity.y) * 1.1;
-    
-    // Normalize speed
-    const newSpeed = Math.sqrt(
-      ballBody.velocity.x * ballBody.velocity.x + 
-      ballBody.velocity.y * ballBody.velocity.y
-    );
-    
-    ballBody.velocity.x = (ballBody.velocity.x / newSpeed) * currentSpeed;
-    ballBody.velocity.y = (ballBody.velocity.y / newSpeed) * currentSpeed;
-    
-    // Update direction
-    this.ballDirection.set(
-      ballBody.velocity.x / currentSpeed,
-      ballBody.velocity.y / currentSpeed
-    );
-    
-    // Increase speed
-    this.ballSpeed = Math.min(this.ballSpeed + 5, 400);
-  }
-  
-  update(time: number, delta: number) {
-    if (!this.gameActive || !this.ball || !this.playerPaddle || !this.opponentPaddle) return;
-    
-    // Calculate FPS
-    this.framesThisSecond++;
-    if (time - this.lastFpsUpdate >= 1000) {
-      this.currentFps = this.framesThisSecond;
-      this.fpsText.setText(`FPS: ${this.currentFps}`);
-      
-      // Color code FPS
-      if (this.currentFps >= 55) {
-        this.fpsText.setColor('#00ff00'); // Green - good
-      } else if (this.currentFps >= 45) {
-        this.fpsText.setColor('#ffff00'); // Yellow - okay
-      } else if (this.currentFps >= 30) {
-        this.fpsText.setColor('#ff9900'); // Orange - slow
-      } else {
-        this.fpsText.setColor('#ff0000'); // Red - bad
-      }
-      
-      this.framesThisSecond = 0;
-      this.lastFpsUpdate = time;
-    }
-    
-    // Send position updates (optimized rate)
-    if (time - this.lastSentPosition > this.sendRate) {
-      ballCrushMultiplayer.updatePosition(this.lobbyId, this.uid, this.playerPaddle.x);
-      this.lastSentPosition = time;
-    }
-    
-    // Host sends ball updates
-    if (this.isHost) {
-      const ballBody = this.ball.body as Phaser.Physics.Arcade.Body;
-      ballCrushMultiplayer.updateBallPosition(this.lobbyId, {
-        x: this.ball.x,
-        y: this.ball.y,
-        speed: this.ballSpeed,
-        directionX: this.ballDirection.x,
-        directionY: this.ballDirection.y
-      });
-      
-      // REMOVED: No scoring checks - ball just bounces forever
-      // this.checkScoring();
-    }
-    
-    // Keyboard controls
-    if (this.cursors) {
-      if (this.cursors.left?.isDown) {
-        this.playerPaddle.x = Math.max(30, this.playerPaddle.x - this.moveSpeed);
-      }
-      if (this.cursors.right?.isDown) {
-        this.playerPaddle.x = Math.min(330, this.playerPaddle.x + this.moveSpeed);
+
+  private clearHighlights() {
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        if ((row + col) % 2 === 1) {
+          this.squares[row][col].setFillStyle(0x8b4513);
+        }
       }
     }
-    
-    // Ball rotation
-    this.ball.rotation += 0.02;
   }
-  
-  // REMOVED: checkScoring method - no scoring
-  
-  // REMOVED: resetBall method - no ball resets
-  
-  private handleGameOver(won: boolean) {
+
+  private updatePieceInteractivity() {
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        const piece = this.pieces[row]?.[col];
+        if (piece && piece.active) {
+          const pieceColor = this.board[row]?.[col]?.includes('red') ? 'red' : 'black';
+          
+          if (pieceColor === this.myColor && this.gameActive && this.myTurn) {
+            piece.setInteractive({ useHandCursor: true });
+            piece.on('pointerdown', () => this.onPieceClick(row, col));
+            piece.on('pointerover', () => piece.setTint(0xffffaa));
+            piece.on('pointerout', () => piece.clearTint());
+          } else {
+            piece.disableInteractive();
+            piece.clearTint();
+          }
+        }
+      }
+    }
+  }
+
+  private getSquareName(row: number, col: number): string {
+    const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    return `${letters[col]}${8 - row}`;
+  }
+
+  private updateTurnText() {
+    if (!this.gameActive) {
+      this.turnText.setText('Waiting for game to start...');
+      return;
+    }
+
+    if (this.myTurn) {
+      this.turnText.setText('🔴 YOUR TURN');
+      this.turnText.setColor('#00ff00');
+      this.messageText.setText('Select a piece to move');
+    } else {
+      this.turnText.setText('⚫ OPPONENT\'S TURN');
+      this.turnText.setColor('#ff6666');
+      this.messageText.setText('Waiting for opponent...');
+    }
+  }
+
+  private async resign() {
+    if (!this.gameActive) return;
+
     this.gameActive = false;
-    
-    const message = won ? 'YOU WIN!' : 'YOU LOSE!';
-    const color = won ? '#ffff00' : '#ff0000';
-    
+    this.socket?.emit('playerResigned', { roomId: this.roomId });
+    this.showGameOver('You resigned');
+  }
+
+  private showGameOver(message: string) {
+    const overlay = this.add.graphics();
+    overlay.fillStyle(0x000000, 0.7);
+    overlay.fillRect(0, 0, 360, 640);
+
     this.add.text(180, 280, 'GAME OVER', {
       fontSize: '32px',
-      color: '#ff0000',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
-    }).setOrigin(0.5);
-    
-    this.add.text(180, 320, message, {
-      fontSize: '32px',
-      color: color,
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
-    }).setOrigin(0.5);
-    
-    this.add.text(180, 360, 'Click to return to lobby', {
-      fontSize: '16px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-    
-    this.input.once('pointerdown', () => {
-      this.cleanup();
-      this.scene.start('CookieScene', {
-        username: this.username,
-        uid: this.uid
-      });
-    });
-  }
-  
-  private handleDisconnect() {
-    this.gameActive = false;
-    
-    this.add.text(180, 300, 'Opponent disconnected', {
-      fontSize: '24px',
-      color: '#ff0000',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
-    }).setOrigin(0.5);
-    
-    this.add.text(180, 350, 'You win!', {
-      fontSize: '24px',
       color: '#ffff00',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
+      fontStyle: 'bold'
     }).setOrigin(0.5);
-    
-    this.add.text(180, 400, 'Click to return to lobby', {
-      fontSize: '16px',
+
+    this.add.text(180, 330, message, {
+      fontSize: '24px',
       color: '#ffffff'
     }).setOrigin(0.5);
-    
-    this.input.once('pointerdown', () => {
-      this.cleanup();
-      this.scene.start('CookieScene', {
-        username: this.username,
-        uid: this.uid
-      });
+
+    this.add.text(180, 380, `Moves: ${this.movesCount}`, {
+      fontSize: '14px',
+      color: '#cccccc'
+    }).setOrigin(0.5);
+
+    this.add.text(180, 410, `Captured: ${this.piecesCapturedCount}`, {
+      fontSize: '14px',
+      color: '#ffaa00'
+    }).setOrigin(0.5);
+
+    this.add.text(180, 440, `Kings: ${this.kingsMadeCount}`, {
+      fontSize: '14px',
+      color: '#ffff00'
+    }).setOrigin(0.5);
+
+    const returnBtn = this.add.text(180, 500, 'RETURN TO MENU', {
+      fontSize: '16px',
+      color: '#ffffff',
+      backgroundColor: '#4CAF50',
+      padding: { x: 15, y: 8 }
+    })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+
+    returnBtn.on('pointerdown', () => {
+      this.socket?.disconnect();
+      this.scene.start('CheckersStartScene');
     });
   }
-  
-  private cleanup() {
-    if (this.unsubscribeLobby) {
-      this.unsubscribeLobby();
-    }
-    if (this.unsubscribeBall) {
-      this.unsubscribeBall();
-    }
-    BallCrushGameScene.isInitializing = false;
-  }
-  
-  private addBackgroundEffects() {
-    for (let i = 0; i < 5; i++) {
-      const x = Phaser.Math.Between(50, 310);
-      const y = Phaser.Math.Between(100, 540);
-      const circle = this.add.circle(x, y, 10, 0xffaa00, 0.05);
-      
-      this.tweens.add({
-        targets: circle,
-        y: y + 20,
-        alpha: 0.1,
-        duration: 3000 + i * 500,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.easeInOut'
-      });
-    }
-  }
-  
+
   shutdown() {
-    this.cleanup();
+    this.socket?.disconnect();
   }
 }
