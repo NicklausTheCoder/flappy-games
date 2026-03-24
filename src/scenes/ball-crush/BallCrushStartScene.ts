@@ -68,7 +68,7 @@ export class BallCrushStartScene extends Phaser.Scene {
       // Navigate to external games page
       window.location.href = 'https://wintapgames.com/games';
     });
-
+    
     // Animation for construction icon
     this.tweens.add({
       targets: this.add.text(180, 180, '🚧', { fontSize: '80px' }),
