@@ -482,9 +482,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 this.gameActive = false;
                 const winnerText = state.winner === this.uid ? 'YOU WIN!' : `${this.opponent?.displayName || 'Opponent'} WINS!`;
                 this.showGameOver(winnerText);
-                if (state.winner === this.uid) {
-                    await this.awardWinnings();
-                }
+
                 return;
             }
 
@@ -1099,6 +1097,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
     private async initializePingPath() {
         try {
+            // Create a unique path for this game session
             const pingRef = ref(db, `ping/${this.lobbyId}`);
 
             // Check if the path exists
@@ -1113,8 +1112,21 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 });
                 this.storeLog('📡 Ping path initialized in Firebase');
             }
+
+            // Also create a sub-path for this player
+            const playerPingRef = ref(db, `ping/${this.lobbyId}/${this.uid}`);
+            const playerSnapshot = await get(playerPingRef);
+
+            if (!playerSnapshot.exists()) {
+                await set(playerPingRef, {
+                    uid: this.uid,
+                    createdAt: Date.now()
+                });
+            }
+
         } catch (error) {
-            this.storeLog('Failed to initialize ping path:', error);
+            console.warn('Failed to initialize ping path:', error);
+            // Don't store this as a log to avoid recursion
         }
     }
     private startPingCheck() {
@@ -1125,14 +1137,15 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             const startTime = Date.now();
 
             try {
-                // Send a ping to Firebase and measure response time
+                // Ensure the ping path exists
                 const pingRef = ref(db, `ping/${this.lobbyId}/${this.uid}`);
+
+                // Write a small ping
                 await update(pingRef, {
-                    timestamp: startTime,
-                    uid: this.uid
+                    lastPing: startTime,
+                    lastSeen: Date.now()
                 });
 
-                // Wait for the update to complete (Firebase already gave us response time)
                 const endTime = Date.now();
                 const ping = endTime - startTime;
 
@@ -1147,21 +1160,32 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 this.currentPing = Math.round(avgPing);
 
                 // Update display with color coding
-                let color = '#00ff00'; // Green for good ping
-                if (this.currentPing > 150) color = '#ffff00'; // Yellow for medium
-                if (this.currentPing > 300) color = '#ff6600'; // Orange for high
-                if (this.currentPing > 500) color = '#ff0000'; // Red for very high
+                let color = '#00ff00';
+                if (this.currentPing > 150) color = '#ffff00';
+                if (this.currentPing > 300) color = '#ff6600';
+                if (this.currentPing > 500) color = '#ff0000';
 
                 this.pingText.setText(`Ping: ${this.currentPing} ms`);
                 this.pingText.setColor(color);
 
-                // Clean up the ping entry after 10 seconds
-                setTimeout(async () => {
-                    await remove(pingRef);
-                }, 10000);
+                // Clean up old ping entries periodically
+                if (Math.random() < 0.1) { // 10% chance each ping
+                    const oldPings = ref(db, `ping/${this.lobbyId}`);
+                    const snapshot = await get(oldPings);
+                    if (snapshot.exists()) {
+                        const pings = snapshot.val();
+                        const now = Date.now();
+                        for (const [uid, data] of Object.entries(pings)) {
+                            if (uid !== 'initialized' && data.lastSeen && (now - data.lastSeen) > 60000) {
+                                await remove(ref(db, `ping/${this.lobbyId}/${uid}`));
+                            }
+                        }
+                    }
+                }
 
             } catch (error) {
-                this.storeLog('Ping check failed:', error);
+                // Silently fail - don't store logs to avoid infinite loop
+                console.warn('Ping check failed:', error);
                 this.pingText.setText('Ping: --- ms');
                 this.pingText.setColor('#ff6666');
             }
@@ -1537,14 +1561,29 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
      * Store log in buffer (batched to reduce Firebase writes)
      */
     private storeLog(message: string, additionalData?: any) {
-        // Add to buffer instead of writing immediately
+        // Skip if message is invalid
+        if (!message || typeof message !== 'string') {
+            console.warn('Invalid log message skipped:', message);
+            return;
+        }
+
+        // Sanitize additionalData to avoid circular references
+        let safeData = null;
+        if (additionalData !== undefined) {
+            try {
+                safeData = this.sanitizeForFirebase(additionalData);
+            } catch (e) {
+                console.warn('Failed to sanitize log data:', e);
+                safeData = { error: 'Data could not be serialized' };
+            }
+        }
+
         this.logBuffer.push({
             message: message,
-            additionalData: additionalData,
+            additionalData: safeData,
             timestamp: Date.now()
         });
 
-        // If buffer gets too big, flush immediately
         if (this.logBuffer.length >= 50) {
             this.flushLogs();
         }
@@ -1615,33 +1654,29 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     /**
      * Recursively remove undefined values and convert circular references
      */
-    private sanitizeForFirebase(data: any): any {
-        if (data === undefined) return null;
-        if (data === null) return null;
+    private sanitizeForFirebase(data: any, seen = new WeakSet()): any {
+        // Handle null/undefined
+        if (data === undefined || data === null) return null;
 
         // Handle primitive types
         if (typeof data !== 'object') return data;
 
+        // Handle circular references
+        if (seen.has(data)) {
+            return '[Circular Reference]';
+        }
+        seen.add(data);
+
         // Handle arrays
         if (Array.isArray(data)) {
-            return data.map(item => this.sanitizeForFirebase(item)).filter(item => item !== undefined);
+            return data.map(item => this.sanitizeForFirebase(item, seen));
         }
 
         // Handle objects
         const sanitized: any = {};
         for (const [key, value] of Object.entries(data)) {
-            // Skip undefined values
             if (value === undefined) continue;
-
-            // Recursively sanitize nested objects
-            if (value && typeof value === 'object') {
-                const nested = this.sanitizeForFirebase(value);
-                if (nested !== null && Object.keys(nested).length > 0) {
-                    sanitized[key] = nested;
-                }
-            } else {
-                sanitized[key] = value;
-            }
+            sanitized[key] = this.sanitizeForFirebase(value, seen);
         }
 
         return Object.keys(sanitized).length > 0 ? sanitized : null;
