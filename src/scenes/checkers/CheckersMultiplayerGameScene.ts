@@ -135,7 +135,6 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.kingsMadeCount = 0;
         await this.initializeLogsPath();
         this.startLogBatching();
-        this.startDesyncChecker();
         // Load or initialize game state
         await this.initializeGameState();
 
@@ -465,72 +464,18 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
 
     private subscribeToGameMoves() {
+
+
         const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
 
         this.gameStateUnsubscribe = onValue(gameStateRef, async (snapshot) => {
+
+            if (this.moveInProgress) return;
             if (!snapshot.exists() || !this.gameActive) return;
 
             const state = snapshot.val();
 
-            // 🔥 PART 1: FORCE SYNC CHECK - ALWAYS RUN THIS FIRST 🔥
-            // Check if our local board matches Firebase exactly
-            let needsSync = false;
-
-            // Check if turns don't match
-            if (this.currentPlayer !== state.currentPlayer) {
-                this.storeLog(`⚠️ Turn desync! Local: ${this.currentPlayer}, Remote: ${state.currentPlayer}`);
-                needsSync = true;
-            }
-
-            // Check if board is different (quick check - compare piece counts or a sample)
-            // You can add a more thorough check if needed
-            if (!needsSync && this.board && state.board) {
-                // Quick check: compare piece counts
-                let localCount = 0;
-                let remoteCount = 0;
-                for (let i = 0; i < this.BOARD_SIZE; i++) {
-                    for (let j = 0; j < this.BOARD_SIZE; j++) {
-                        if (this.board[i]?.[j]) localCount++;
-                        if (state.board[i]?.[j]) remoteCount++;
-                    }
-                }
-                if (localCount !== remoteCount) {
-                    this.storeLog(`⚠️ Board desync! Local pieces: ${localCount}, Remote pieces: ${remoteCount}`);
-                    needsSync = true;
-                }
-            }
-
-            // FORCE SYNC - Load everything from Firebase
-            if (needsSync && !this.moveInProgress) {
-                this.storeLog(`🔄 FORCE SYNCING from Firebase...`);
-
-                // Deep copy the board from Firebase
-                this.board = JSON.parse(JSON.stringify(state.board));
-                this.currentPlayer = state.currentPlayer;
-                this.myTurn = (this.currentPlayer === this.myColor);
-
-                // Re-render everything
-                this.renderAllPieces();
-                this.updateTurnDisplay();
-
-                // Clear any pending selections
-                this.selectedPiece = null;
-                this.validMoves = [];
-                this.clearHighlights();
-                this.removeSelectedGlow();
-
-                this.storeLog(`✅ Sync complete. Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
-                this.showStatusMessage(`⚠️ Game synced! ${this.myTurn ? 'Your turn' : "Opponent's turn"}`, 1500);
-
-                // Update timestamp to prevent re-processing the same move
-                if (state.lastMoveTimestamp) {
-                    this.lastProcessedMoveTimestamp = state.lastMoveTimestamp;
-                }
-
-                return; // Don't process the move again
-            }
-
-            // PART 2: Check if game has ended
+            // Check if game has ended
             if (state.winner && state.winner !== this.gameWinner) {
                 this.gameWinner = state.winner;
                 this.gameActive = false;
@@ -542,7 +487,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 return;
             }
 
-            // PART 3: Check for new move
+            // Check for new move - ONLY process if it's NOT our move
             const lastMoveTimestamp = state.lastMoveTimestamp || 0;
             if (lastMoveTimestamp > this.lastProcessedMoveTimestamp) {
                 const lastMove = state.lastMove;
@@ -558,7 +503,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 }
             }
 
-            // PART 4: Update turn if needed (but not already synced)
+            // ONLY update currentPlayer if it's NOT the result of our own move
+            // and we're not in the middle of a move
             if (this.currentPlayer !== state.currentPlayer && !this.moveInProgress) {
                 this.currentPlayer = state.currentPlayer;
                 this.myTurn = (this.currentPlayer === this.myColor);
@@ -852,53 +798,6 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             this.moveInProgress = false;
         }
     }
-    private startDesyncChecker() {
-        this.time.addEvent({
-            delay: 2000, // Check every 2 seconds
-            callback: () => {
-                if (!this.gameActive || this.moveInProgress) return;
-
-                // Check if it's our turn but we can't move any pieces
-                if (this.myTurn) {
-                    let hasMovablePiece = false;
-                    for (let row = 0; row < this.BOARD_SIZE; row++) {
-                        for (let col = 0; col < this.BOARD_SIZE; col++) {
-                            const piece = this.board[row][col];
-                            if (piece && ((piece.includes('red') && this.myColor === 'red') ||
-                                (piece.includes('black') && this.myColor === 'black'))) {
-                                const moves = this.getValidMoves(row, col);
-                                if (moves.length > 0) {
-                                    hasMovablePiece = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (hasMovablePiece) break;
-                    }
-
-                    // If it's our turn but no movable pieces, something is wrong
-                    if (!hasMovablePiece && this.gameActive) {
-                        this.storeLog(`⚠️ Desync warning: It's my turn but no movable pieces!`);
-
-                        // Force a state reload from Firebase
-                        const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
-                        get(gameStateRef).then(snapshot => {
-                            if (snapshot.exists()) {
-                                const state = snapshot.val();
-                                this.board = state.board;
-                                this.currentPlayer = state.currentPlayer;
-                                this.myTurn = (this.currentPlayer === this.myColor);
-                                this.renderAllPieces();
-                                this.updateTurnDisplay();
-                                this.storeLog(`✅ State synced. Current player: ${this.currentPlayer}, My turn: ${this.myTurn}`);
-                            }
-                        });
-                    }
-                }
-            },
-            loop: true
-        });
-    }
     private animateMove(fromRow: number, fromCol: number, toRow: number, toCol: number, capturedPiece: any, promoted: boolean): Promise<void> {
         return new Promise((resolve) => {
             const piece = this.pieces[fromRow]?.[fromCol];
@@ -966,6 +865,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 }
             });
         });
+
+        this.moveInProgress = false;
     }
 
     private async safeApplyGameState(state: any) {
