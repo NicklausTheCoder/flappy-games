@@ -78,6 +78,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     private readonly BOARD_OFFSET_Y = 110;
 
     // Visual effects
+    private logBuffer: { message: string; additionalData?: any; timestamp: number }[] = [];
+    private logBatchInterval: number = 0;
     private selectedGlow: Phaser.GameObjects.Graphics | null = null;
 
     // Flag to indicate if board should be flipped for black player
@@ -131,6 +133,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.movesCount = 0;
         this.piecesCapturedCount = 0;
         this.kingsMadeCount = 0;
+
+            this.startLogBatching();
         // Load or initialize game state
         await this.initializeGameState();
 
@@ -432,7 +436,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         const texture = isKing ? (isRed ? 'red_king' : 'black_king') : (isRed ? 'red_normal' : 'black_normal');
 
         if (!this.textures.exists(texture)) {
-            console.error(`❌ Texture not found: ${texture}`);
+            this.storeLog(`❌ Texture not found: ${texture}`);
             return;
         }
 
@@ -649,64 +653,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             this.removeSelectedGlow();
         }
     }
-    /**
-     * Store log in Firebase (fire and forget - no await needed)
-     */
-    private storeLog(message: string, additionalData?: any) {
-        // Don't await - just execute and let it run
-        this._saveLog(message, additionalData).catch(err => {
-            console.error('Failed to store log:', err);
-        });
-    }
 
-    /**
-     * Internal method to actually save the log
-     */
-    private async _saveLog(message: string, additionalData?: any) {
-        try {
-            const logEntry = {
-                timestamp: Date.now(),
-                userId: this.uid,
-                lobbyId: this.lobbyId,
-                message: message,
-                myColor: this.myColor,
-                currentPlayer: this.currentPlayer,
-                myTurn: this.myTurn,
-                gameActive: this.gameActive,
-                additionalData: additionalData || null
-            };
-
-            const logRef = ref(db, `game_logs/${this.lobbyId}/${this.uid}/${Date.now()}`);
-            await set(logRef, logEntry);
-
-            // Clean up old logs
-            this.cleanupOldLogs();
-
-        } catch (error) {
-            console.error('Failed to store log:', error);
-        }
-    }
-
-    private async cleanupOldLogs() {
-        try {
-            const logsRef = ref(db, `game_logs/${this.lobbyId}/${this.uid}`);
-            const snapshot = await get(logsRef);
-
-            if (snapshot.exists()) {
-                const logs = snapshot.val();
-                const logKeys = Object.keys(logs).sort();
-
-                if (logKeys.length > 200) {
-                    const toDelete = logKeys.slice(0, logKeys.length - 200);
-                    for (const key of toDelete) {
-                        await remove(ref(db, `game_logs/${this.lobbyId}/${this.uid}/${key}`));
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('Error cleaning up logs:', error);
-        }
-    }
     private onPieceHover(actualRow: number, col: number, isOver: boolean) {
         if (!this.gameActive) return;
 
@@ -827,7 +774,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             }, 100);
 
         } catch (error) {
-            console.error('Error making move:', error);
+            this.storeLog('Error making move:', error);
             this.showStatusMessage('Failed to make move!', 1500);
             const snapshot = await get(gameStateRef);
             if (snapshot.exists()) {
@@ -962,7 +909,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
             this.storeLog(`✅ ${color} piece promoted to king at [${row},${col}]`);
         } else {
-            console.error(`❌ King texture not found: ${newTexture}`);
+            this.storeLog(`❌ King texture not found: ${newTexture}`);
         }
 
         this.showStatusMessage(`👑 ${color.toUpperCase()} KING!`, 1500);
@@ -1179,7 +1126,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 }, 10000);
 
             } catch (error) {
-                console.error('Ping check failed:', error);
+                this.storeLog('Ping check failed:', error);
                 this.pingText.setText('Ping: --- ms');
                 this.pingText.setColor('#ff6666');
             }
@@ -1300,7 +1247,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 });
             }
         } catch (error) {
-            console.error('Error awarding winnings:', error);
+            this.storeLog('Error awarding winnings:', error);
         }
     }
 
@@ -1360,7 +1307,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                             const hasVisualPiece = !!this.pieces[row]?.[col];
 
                             if (hasBoardPiece !== hasVisualPiece) {
-                                console.warn(`⚠️ Desync detected at [${row},${col}]`);
+                                this.storeLog(`⚠️ Desync detected at [${row},${col}]`);
                                 this.fixDesync();
                                 return;
                             }
@@ -1372,7 +1319,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         });
     }
     private async fixDesync() {
-        console.warn('🔧 Attempting to fix desync...');
+        this.storeLog('🔧 Attempting to fix desync...');
 
         // Force re-render from board state
         this.renderAllPieces();
@@ -1392,19 +1339,19 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 this.storeLog('✅ Desync fixed successfully');
             }
         } catch (error) {
-            console.error('❌ Failed to fix desync:', error);
+            this.storeLog('❌ Failed to fix desync:', error);
         }
     }
     private validateMove(fromRow: number, fromCol: number, toRow: number, toCol: number): boolean {
         // Check if from square has a piece
         if (!this.board[fromRow][fromCol]) {
-            console.warn('❌ Move validation failed: No piece at source');
+            this.storeLog('❌ Move validation failed: No piece at source');
             return false;
         }
 
         // Check if to square is empty
         if (this.board[toRow][toCol]) {
-            console.warn('❌ Move validation failed: Target square occupied');
+            this.storeLog('❌ Move validation failed: Target square occupied');
             return false;
         }
 
@@ -1413,7 +1360,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         const isMyPiece = (piece.includes('red') && this.myColor === 'red') ||
             (piece.includes('black') && this.myColor === 'black');
         if (!isMyPiece) {
-            console.warn('❌ Move validation failed: Not your piece');
+            this.storeLog('❌ Move validation failed: Not your piece');
             return false;
         }
 
@@ -1548,7 +1495,128 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         }
     }
 
+
+    // =========== LOGGING METHODS ===========
+
+    /**
+     * Store log in buffer (batched to reduce Firebase writes)
+     */
+    private storeLog(message: string, additionalData?: any) {
+        // Add to buffer instead of writing immediately
+        this.logBuffer.push({
+            message: message,
+            additionalData: additionalData,
+            timestamp: Date.now()
+        });
+
+        // If buffer gets too big, flush immediately
+        if (this.logBuffer.length >= 50) {
+            this.flushLogs();
+        }
+    }
+
+    /**
+     * Start batching logs (call this in create)
+     */
+    private startLogBatching() {
+        // Flush logs every 10 seconds
+        this.logBatchInterval = window.setInterval(() => {
+            if (this.logBuffer.length > 0) {
+                this.flushLogs();
+            }
+        }, 10000);
+    }
+
+    /**
+     * Flush all buffered logs to Firebase
+     */
+    private async flushLogs() {
+        if (this.logBuffer.length === 0) return;
+
+        const logsToSend = [...this.logBuffer];
+        this.logBuffer = [];
+
+        try {
+            // Send all logs in one batch
+            const updates: any = {};
+
+            for (const log of logsToSend) {
+                const logKey = Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+                const logEntry = {
+                    timestamp: log.timestamp,
+                    userId: this.uid,
+                    lobbyId: this.lobbyId,
+                    message: log.message,
+                    myColor: this.myColor,
+                    currentPlayer: this.currentPlayer,
+                    myTurn: this.myTurn,
+                    gameActive: this.gameActive,
+                    additionalData: log.additionalData || null
+                };
+
+                updates[`game_logs/${this.lobbyId}/${this.uid}/${logKey}`] = logEntry;
+            }
+
+            await update(ref(db), updates);
+
+            // Clean up old logs occasionally (every 5 flushes)
+            if (Math.random() < 0.2) {
+                this.cleanupOldLogs();
+            }
+
+        } catch (error) {
+            this.storeLog('Failed to flush logs:', error);
+            // Put logs back in buffer on failure
+            this.logBuffer = [...logsToSend, ...this.logBuffer];
+        }
+    }
+
+    /**
+     * Clean up old logs (keep last 1000)
+     */
+    private async cleanupOldLogs() {
+        try {
+            const logsRef = ref(db, `game_logs/${this.lobbyId}/${this.uid}`);
+            const snapshot = await get(logsRef);
+
+            if (snapshot.exists()) {
+                const logs = snapshot.val();
+                const logKeys = Object.keys(logs).sort();
+
+                if (logKeys.length > 1000) {
+                    const toDelete = logKeys.slice(0, logKeys.length - 1000);
+                    const deleteUpdates: any = {};
+                    for (const key of toDelete) {
+                        deleteUpdates[`game_logs/${this.lobbyId}/${this.uid}/${key}`] = null;
+                    }
+                    await update(ref(db), deleteUpdates);
+                }
+            }
+        } catch (error) {
+            this.storeLog('Error cleaning up logs:', error);
+        }
+    }
+
+    /**
+     * Flush logs on scene shutdown
+     */
+    private flushLogsOnShutdown() {
+        if (this.logBatchInterval) {
+            clearInterval(this.logBatchInterval);
+            this.logBatchInterval = 0;
+        }
+
+        // Flush any remaining logs
+        if (this.logBuffer.length > 0) {
+            this.flushLogs();
+        }
+    }
+
+
     private cleanup() {
+
+ this.flushLogsOnShutdown();
+
         if (this.gameStateUnsubscribe) this.gameStateUnsubscribe();
         off(ref(db, `games/checkers/${this.lobbyId}`));
 
@@ -1558,8 +1626,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             this.pingInterval = 0;
         }
 
-        checkersMultiplayer.setPlayerOnline(this.uid, false).catch(err => console.error(err));
-        checkersMultiplayer.setPlayerGameStatus(this.uid, false).catch(err => console.error(err));
+        checkersMultiplayer.setPlayerOnline(this.uid, false).catch(err => this.storeLog(err));
+        checkersMultiplayer.setPlayerGameStatus(this.uid, false).catch(err => this.storeLog(err));
     }
     shutdown() { this.cleanup(); }
 }
