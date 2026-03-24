@@ -1,7 +1,7 @@
 // src/scenes/checkers/CheckersMultiplayerGameScene.ts
 import Phaser from 'phaser';
 import { checkersMultiplayer } from '../../firebase/checkersMultiplayer';
-import { ref, onValue, off, update, get, remove } from 'firebase/database';
+import { ref, onValue, off, update, get, remove, set } from 'firebase/database';
 import { db } from '../../firebase/init';
 import { updateCheckersWalletBalance } from '../../firebase/checkersService';
 
@@ -133,8 +133,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.movesCount = 0;
         this.piecesCapturedCount = 0;
         this.kingsMadeCount = 0;
-
-            this.startLogBatching();
+        await this.initializeLogsPath();
+        this.startLogBatching();
         // Load or initialize game state
         await this.initializeGameState();
 
@@ -1520,6 +1520,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
      */
     private startLogBatching() {
         // Flush logs every 10 seconds
+
+        console.log('Starting log batching...');
         this.logBatchInterval = window.setInterval(() => {
             if (this.logBuffer.length > 0) {
                 this.flushLogs();
@@ -1530,47 +1532,121 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     /**
      * Flush all buffered logs to Firebase
      */
-    private async flushLogs() {
-        if (this.logBuffer.length === 0) return;
+  private async flushLogs() {
+    if (this.logBuffer.length === 0) return;
 
-        const logsToSend = [...this.logBuffer];
-        this.logBuffer = [];
+    const logsToSend = [...this.logBuffer];
+    this.logBuffer = [];
 
+    try {
+        const updates: any = {};
+
+        for (const log of logsToSend) {
+            const logKey = Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+            
+            // SANITIZE THE DATA - Remove undefined values
+            const sanitizedAdditionalData = this.sanitizeForFirebase(log.additionalData);
+            
+            const logEntry = {
+                timestamp: log.timestamp,
+                userId: this.uid,
+                lobbyId: this.lobbyId,
+                message: log.message,
+                myColor: this.myColor,
+                currentPlayer: this.currentPlayer,
+                myTurn: this.myTurn,
+                gameActive: this.gameActive,
+                additionalData: sanitizedAdditionalData || null
+            };
+            
+            console.log('Flushing log:', logEntry);
+            updates[`game_logs/${this.lobbyId}/${this.uid}/${logKey}`] = logEntry;
+        }
+
+        await update(ref(db), updates);
+        
+        // Clean up old logs occasionally
+        if (Math.random() < 0.2) {
+            this.cleanupOldLogs();
+        }
+
+    } catch (error) {
+        console.error('Failed to flush logs:', error);
+        // Put logs back in buffer on failure
+        this.logBuffer = [...logsToSend, ...this.logBuffer];
+    }
+}
+
+/**
+ * Recursively remove undefined values and convert circular references
+ */
+private sanitizeForFirebase(data: any): any {
+    if (data === undefined) return null;
+    if (data === null) return null;
+    
+    // Handle primitive types
+    if (typeof data !== 'object') return data;
+    
+    // Handle arrays
+    if (Array.isArray(data)) {
+        return data.map(item => this.sanitizeForFirebase(item)).filter(item => item !== undefined);
+    }
+    
+    // Handle objects
+    const sanitized: any = {};
+    for (const [key, value] of Object.entries(data)) {
+        // Skip undefined values
+        if (value === undefined) continue;
+        
+        // Recursively sanitize nested objects
+        if (value && typeof value === 'object') {
+            const nested = this.sanitizeForFirebase(value);
+            if (nested !== null && Object.keys(nested).length > 0) {
+                sanitized[key] = nested;
+            }
+        } else {
+            sanitized[key] = value;
+        }
+    }
+    
+    return Object.keys(sanitized).length > 0 ? sanitized : null;
+}
+    private async initializeLogsPath() {
         try {
-            // Send all logs in one batch
-            const updates: any = {};
+            // Create the logs path structure
+            const logsRef = ref(db, `game_logs/${this.lobbyId}/${this.uid}`);
 
-            for (const log of logsToSend) {
-                const logKey = Date.now() + '_' + Math.random().toString(36).substring(2, 8);
-                const logEntry = {
-                    timestamp: log.timestamp,
-                    userId: this.uid,
-                    lobbyId: this.lobbyId,
-                    message: log.message,
-                    myColor: this.myColor,
-                    currentPlayer: this.currentPlayer,
-                    myTurn: this.myTurn,
-                    gameActive: this.gameActive,
-                    additionalData: log.additionalData || null
-                };
+            // Check if path exists by trying to write a placeholder
+            const snapshot = await get(logsRef);
 
-                updates[`game_logs/${this.lobbyId}/${this.uid}/${logKey}`] = logEntry;
+            if (!snapshot.exists()) {
+                // Write a placeholder to create the path
+                await set(logsRef, {
+                    initialized: true,
+                    createdAt: Date.now(),
+                    gameId: this.lobbyId,
+                    playerId: this.uid,
+                    playerColor: this.myColor
+                });
+                this.storeLog('📁 Logs path initialized in Firebase');
             }
 
-            await update(ref(db), updates);
+            // Also create a game-level logs directory
+            const gameLogsRef = ref(db, `game_logs/${this.lobbyId}`);
+            const gameSnapshot = await get(gameLogsRef);
 
-            // Clean up old logs occasionally (every 5 flushes)
-            if (Math.random() < 0.2) {
-                this.cleanupOldLogs();
+            if (!gameSnapshot.exists()) {
+                await set(gameLogsRef, {
+                    initialized: true,
+                    createdAt: Date.now(),
+                    gameId: this.lobbyId
+                });
             }
 
         } catch (error) {
-            this.storeLog('Failed to flush logs:', error);
-            // Put logs back in buffer on failure
-            this.logBuffer = [...logsToSend, ...this.logBuffer];
+            console.error('Failed to initialize logs path:', error);
         }
     }
-
     /**
      * Clean up old logs (keep last 1000)
      */
@@ -1615,7 +1691,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
     private cleanup() {
 
- this.flushLogsOnShutdown();
+        this.flushLogsOnShutdown();
 
         if (this.gameStateUnsubscribe) this.gameStateUnsubscribe();
         off(ref(db, `games/checkers/${this.lobbyId}`));
