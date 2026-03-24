@@ -67,6 +67,8 @@ async markLobbyReady(lobbyId: string): Promise<void> {
         console.error('Error marking lobby as ready:', error);
     }
 }
+
+
   /**
    * Update player queue status - USING UPDATE (just for queue)
    */

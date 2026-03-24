@@ -95,7 +95,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         lobby?: any;
         playerColor?: 'red' | 'black';
     }) {
-        console.log('🎮 Checkers Multiplayer Game Started:', data);
+        this.storeLog('🎮 Checkers Multiplayer Game Started:', data);
 
         this.username = data.username;
         this.uid = data.uid;
@@ -111,8 +111,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         // Flip board for black player so they see their pieces at the bottom
         this.isBoardFlipped = (this.myColor === 'black');
 
-        console.log(`🎨 My color: ${this.myColor === 'red' ? 'RED (HOST)' : 'BLACK (JOINER)'}`);
-        console.log(`🔄 Board flipped: ${this.isBoardFlipped}`);
+        this.storeLog(`🎨 My color: ${this.myColor === 'red' ? 'RED (HOST)' : 'BLACK (JOINER)'}`);
+        this.storeLog(`🔄 Board flipped: ${this.isBoardFlipped}`);
     }
 
     async create() {
@@ -147,7 +147,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.createConnectionQualityIndicator();
         this.startSyncCheck();
 
-        console.log('✅ Game scene ready');
+        this.storeLog('✅ Game scene ready');
     }
 
     private initializeArrays() {
@@ -284,17 +284,17 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                     if (row < 3) {
                         // Top rows - Black pieces
                         this.board[row][col] = 'black';
-                        console.log(`📍 Black piece at actual[${row},${col}]`);
+                        this.storeLog(`📍 Black piece at actual[${row},${col}]`);
                     } else if (row > 4) {
                         // Bottom rows - Red pieces
                         this.board[row][col] = 'red';
-                        console.log(`📍 Red piece at actual[${row},${col}]`);
+                        this.storeLog(`📍 Red piece at actual[${row},${col}]`);
                     }
                 }
             }
         }
 
-        console.log('✅ Board initialized with red at bottom (rows 5-7), black at top (rows 0-2)');
+        this.storeLog('✅ Board initialized with red at bottom (rows 5-7), black at top (rows 0-2)');
     }
 
     private async initializeGameState() {
@@ -376,10 +376,10 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         // Convert actual board row to visual row
         if (this.isBoardFlipped) {
             const flipped = this.BOARD_SIZE - 1 - row;
-            console.log(`   transformRowForDisplay: actual ${row} -> visual ${flipped} (flipped)`);
+            this.storeLog(`   transformRowForDisplay: actual ${row} -> visual ${flipped} (flipped)`);
             return flipped;
         }
-        console.log(`   transformRowForDisplay: actual ${row} -> visual ${row} (not flipped)`);
+        this.storeLog(`   transformRowForDisplay: actual ${row} -> visual ${row} (not flipped)`);
         return row;
     }
 
@@ -392,9 +392,9 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
 
     private renderAllPieces() {
-        console.log('📍 Rendering all pieces...');
-        console.log('My color:', this.myColor);
-        console.log('Board flipped:', this.isBoardFlipped);
+        this.storeLog('📍 Rendering all pieces...');
+        this.storeLog('My color:', this.myColor);
+        this.storeLog('Board flipped:', this.isBoardFlipped);
 
         // Clear existing pieces
         for (let row = 0; row < this.BOARD_SIZE; row++) {
@@ -416,12 +416,12 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 if (pieceType) {
                     const visualRow = this.transformRowForDisplay(actualRow);
                     this.createPiece(actualRow, visualRow, col, pieceType);
-                    console.log(`   Created ${pieceType} piece at actual[${actualRow},${col}] -> visual[${visualRow},${col}]`);
+                    this.storeLog(`   Created ${pieceType} piece at actual[${actualRow},${col}] -> visual[${visualRow},${col}]`);
                 }
             }
         }
 
-        console.log('✅ All pieces rendered');
+        this.storeLog('✅ All pieces rendered');
     }
     private createPiece(actualRow: number, visualRow: number, col: number, pieceType: string) {
         const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
@@ -486,7 +486,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
                 // ONLY apply if it's not our move (opponent's move)
                 if (lastMove && lastMove.playerUid !== this.uid && !this.moveInProgress) {
-                    console.log('📥 Opponent move detected:', lastMove);
+                    this.storeLog('📥 Opponent move detected:', lastMove);
                     await this.applyOpponentMove(lastMove);
                     this.lastProcessedMoveTimestamp = lastMoveTimestamp;
                 } else if (lastMove && lastMove.playerUid === this.uid) {
@@ -508,7 +508,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     private async applyOpponentMove(move: GameMove) {
         this.moveInProgress = true;
 
-        console.log(`🎯 Applying opponent move from [${move.fromRow},${move.fromCol}] to [${move.toRow},${move.toCol}]`);
+        this.storeLog(`🎯 Applying opponent move from [${move.fromRow},${move.fromCol}] to [${move.toRow},${move.toCol}]`);
 
         // Update board state in memory FIRST
         const piece = this.board[move.fromRow][move.fromCol];
@@ -553,7 +553,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.clearHighlights();
         this.removeSelectedGlow();
 
-        console.log(`🎯 Opponent move applied. Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
+        this.storeLog(`🎯 Opponent move applied. Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
 
         // Force a re-render of the pieces to ensure visual sync
         this.renderAllPieces();
@@ -568,8 +568,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     // Replace the onPieceClick method with this fixed version
 
     private onPieceClick(actualRow: number, col: number) {
-        console.log(`🔍 onPieceClick - actualRow: ${actualRow}, col: ${col}`);
-        console.log(`   myTurn: ${this.myTurn}, gameActive: ${this.gameActive}, moveInProgress: ${this.moveInProgress}`);
+        this.storeLog(`🔍 onPieceClick - actualRow: ${actualRow}, col: ${col}`);
+        this.storeLog(`   myTurn: ${this.myTurn}, gameActive: ${this.gameActive}, moveInProgress: ${this.moveInProgress}`);
 
         if (!this.myTurn || !this.gameActive) {
             this.showStatusMessage('Not your turn!', 1000);
@@ -578,18 +578,18 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
         const piece = this.board[actualRow][col];
         if (!piece) {
-            console.log('   No piece at this position');
+            this.storeLog('   No piece at this position');
             return;
         }
 
-        console.log(`   Piece: ${piece}, myColor: ${this.myColor}`);
+        this.storeLog(`   Piece: ${piece}, myColor: ${this.myColor}`);
 
         // Check if it's my piece
         const isMyPiece = (piece.includes('red') && this.myColor === 'red') ||
             (piece.includes('black') && this.myColor === 'black');
 
         if (!isMyPiece) {
-            console.log(`   Not my piece! My color: ${this.myColor}`);
+            this.storeLog(`   Not my piece! My color: ${this.myColor}`);
             this.showStatusMessage('That\'s not your piece!', 1000);
             return;
         }
@@ -601,7 +601,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         // Select the piece
         this.selectedPiece = { row: actualRow, col };
         this.validMoves = this.getValidMoves(actualRow, col);
-        console.log(`   Valid moves found: ${this.validMoves.length}`, this.validMoves);
+        this.storeLog(`   Valid moves found: ${this.validMoves.length}`, this.validMoves);
         this.highlightValidMoves();
 
         // Add glow at visual position
@@ -617,16 +617,16 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     // Replace the onSquareClick method
 
     private onSquareClick(actualRow: number, col: number, visualRow: number) {
-        console.log(`🔍 onSquareClick - actualRow: ${actualRow}, col: ${col}, visualRow: ${visualRow}`);
-        console.log(`   myTurn: ${this.myTurn}, selectedPiece: ${this.selectedPiece ? `[${this.selectedPiece.row},${this.selectedPiece.col}]` : 'null'}`);
+        this.storeLog(`🔍 onSquareClick - actualRow: ${actualRow}, col: ${col}, visualRow: ${visualRow}`);
+        this.storeLog(`   myTurn: ${this.myTurn}, selectedPiece: ${this.selectedPiece ? `[${this.selectedPiece.row},${this.selectedPiece.col}]` : 'null'}`);
 
         if (!this.myTurn || !this.selectedPiece || !this.gameActive || this.moveInProgress) {
-            console.log('   Cannot move - conditions not met');
+            this.storeLog('   Cannot move - conditions not met');
             return;
         }
 
         if (!this.validateMove(this.selectedPiece.row, this.selectedPiece.col, actualRow, col)) {
-            console.log('   Move validation failed');
+            this.storeLog('   Move validation failed');
             this.selectedPiece = null;
             this.clearHighlights();
             this.removeSelectedGlow();
@@ -635,21 +635,78 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
         // Check if this is a valid move
         const isValid = this.validMoves.some(move => move.row === actualRow && move.col === col);
-        console.log(`   Is valid move? ${isValid}`);
-        console.log(`   Valid moves:`, this.validMoves);
+        this.storeLog(`   Is valid move? ${isValid}`);
+        this.storeLog(`   Valid moves:`, this.validMoves);
 
         if (isValid) {
-            console.log(`✅ Making move from [${this.selectedPiece.row},${this.selectedPiece.col}] to [${actualRow},${col}]`);
+            this.storeLog(`✅ Making move from [${this.selectedPiece.row},${this.selectedPiece.col}] to [${actualRow},${col}]`);
             this.makeMove(this.selectedPiece.row, this.selectedPiece.col, actualRow, col);
         } else {
-            console.log('❌ Invalid move!');
+            this.storeLog('❌ Invalid move!');
             this.showStatusMessage('Invalid move!', 800);
             this.selectedPiece = null;
             this.clearHighlights();
             this.removeSelectedGlow();
         }
     }
+    /**
+     * Store log in Firebase (fire and forget - no await needed)
+     */
+    private storeLog(message: string, additionalData?: any) {
+        // Don't await - just execute and let it run
+        this._saveLog(message, additionalData).catch(err => {
+            console.error('Failed to store log:', err);
+        });
+    }
 
+    /**
+     * Internal method to actually save the log
+     */
+    private async _saveLog(message: string, additionalData?: any) {
+        try {
+            const logEntry = {
+                timestamp: Date.now(),
+                userId: this.uid,
+                lobbyId: this.lobbyId,
+                message: message,
+                myColor: this.myColor,
+                currentPlayer: this.currentPlayer,
+                myTurn: this.myTurn,
+                gameActive: this.gameActive,
+                additionalData: additionalData || null
+            };
+
+            const logRef = ref(db, `game_logs/${this.lobbyId}/${this.uid}/${Date.now()}`);
+            await set(logRef, logEntry);
+
+            // Clean up old logs
+            this.cleanupOldLogs();
+
+        } catch (error) {
+            console.error('Failed to store log:', error);
+        }
+    }
+
+    private async cleanupOldLogs() {
+        try {
+            const logsRef = ref(db, `game_logs/${this.lobbyId}/${this.uid}`);
+            const snapshot = await get(logsRef);
+
+            if (snapshot.exists()) {
+                const logs = snapshot.val();
+                const logKeys = Object.keys(logs).sort();
+
+                if (logKeys.length > 200) {
+                    const toDelete = logKeys.slice(0, logKeys.length - 200);
+                    for (const key of toDelete) {
+                        await remove(ref(db, `game_logs/${this.lobbyId}/${this.uid}/${key}`));
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error cleaning up logs:', error);
+        }
+    }
     private onPieceHover(actualRow: number, col: number, isOver: boolean) {
         if (!this.gameActive) return;
 
@@ -762,7 +819,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             this.clearHighlights();
             this.removeSelectedGlow();
 
-            console.log(`✅ Move completed! Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
+            this.storeLog(`✅ Move completed! Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
 
             // Check for win condition
             setTimeout(() => {
@@ -852,7 +909,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
     private async safeApplyGameState(state: any) {
         if (this.pendingSync) {
-            console.log('⏳ Skipping sync - already pending');
+            this.storeLog('⏳ Skipping sync - already pending');
             return;
         }
 
@@ -873,12 +930,12 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
     private checkKingPromotion(row: number, col: number, piece: string | null): boolean {
         if (piece === 'red' && row === 0) {
-            console.log(`👑 Promoting red piece to king at [${row},${col}]`);
+            this.storeLog(`👑 Promoting red piece to king at [${row},${col}]`);
             this.promoteToKing(row, col, 'red');
             return true;
         }
         else if (piece === 'black' && row === 7) {
-            console.log(`👑 Promoting black piece to king at [${row},${col}]`);
+            this.storeLog(`👑 Promoting black piece to king at [${row},${col}]`);
             this.promoteToKing(row, col, 'black');
             return true;
         }
@@ -903,7 +960,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             const visualRow = this.transformRowForDisplay(row);
             this.addPromotionEffect(visualRow, col);
 
-            console.log(`✅ ${color} piece promoted to king at [${row},${col}]`);
+            this.storeLog(`✅ ${color} piece promoted to king at [${row},${col}]`);
         } else {
             console.error(`❌ King texture not found: ${newTexture}`);
         }
@@ -941,21 +998,21 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         const isKing = piece.includes('king');
         const isRed = piece.includes('red');
 
-        console.log(`\n📊 Calculating moves for ${piece} at [${row},${col}]`);
-        console.log(`   isKing: ${isKing}, isRed: ${isRed}`);
+        this.storeLog(`\n📊 Calculating moves for ${piece} at [${row},${col}]`);
+        this.storeLog(`   isKing: ${isKing}, isRed: ${isRed}`);
 
         // Directions for movement
         let directions: number[][] = [];
 
         if (isKing) {
             directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
-            console.log(`   King moves in all 4 directions`);
+            this.storeLog(`   King moves in all 4 directions`);
         } else if (isRed) {
             directions = [[-1, -1], [-1, 1]];
-            console.log(`   Red moves up`);
+            this.storeLog(`   Red moves up`);
         } else {
             directions = [[1, -1], [1, 1]];
-            console.log(`   Black moves down`);
+            this.storeLog(`   Black moves down`);
         }
 
         // Check for captures first - CALL THE NEW FUNCTION
@@ -963,7 +1020,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
         // If there are captures, only return those
         if (captureMoves.length > 0) {
-            console.log(`   Returning ${captureMoves.length} capture moves`);
+            this.storeLog(`   Returning ${captureMoves.length} capture moves`);
             return captureMoves;
         }
 
@@ -981,10 +1038,10 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
                 if (!this.board[newRow][newCol]) {
                     moves.push({ row: newRow, col: newCol });
-                    console.log(`   ✅ Valid regular move: [${newRow},${newCol}]`);
+                    this.storeLog(`   ✅ Valid regular move: [${newRow},${newCol}]`);
                     steps++;
                 } else {
-                    console.log(`   ❌ Blocked by piece at [${newRow},${newCol}]`);
+                    this.storeLog(`   ❌ Blocked by piece at [${newRow},${newCol}]`);
                     break;
                 }
 
@@ -994,7 +1051,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             }
         }
 
-        console.log(`   Total valid moves: ${moves.length}`);
+        this.storeLog(`   Total valid moves: ${moves.length}`);
         return moves;
     }
 
@@ -1027,7 +1084,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                             if (isOpponent) {
                                 captureMoves.push({ row: jumpRow, col: jumpCol });
                                 foundCapture = true;
-                                console.log(`      ✅ Valid king capture: [${jumpRow},${jumpCol}] over [${midRow},${midCol}]`);
+                                this.storeLog(`      ✅ Valid king capture: [${jumpRow},${jumpCol}] over [${midRow},${midCol}]`);
                                 break;
                             }
                         }
@@ -1049,7 +1106,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                             const isOpponent = isRed ? midPiece.includes('black') : midPiece.includes('red');
                             if (isOpponent) {
                                 captureMoves.push({ row: jumpRow, col: jumpCol });
-                                console.log(`      ✅ Valid capture: [${jumpRow},${jumpCol}] over [${midRow},${midCol}]`);
+                                this.storeLog(`      ✅ Valid capture: [${jumpRow},${jumpCol}] over [${midRow},${midCol}]`);
                             }
                         }
                     }
@@ -1216,7 +1273,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         }
 
         if (winner) {
-            console.log('🏆 WIN DETECTED:', winner);
+            this.storeLog('🏆 WIN DETECTED:', winner);
 
             const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
             await update(gameStateRef, {
@@ -1266,7 +1323,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
 
     private highlightValidMoves() {
-        console.log(`🎨 Highlighting ${this.validMoves.length} valid moves`);
+        this.storeLog(`🎨 Highlighting ${this.validMoves.length} valid moves`);
 
         this.validMoves.forEach(move => {
             // Find the square at the actual board position
@@ -1286,7 +1343,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                     }
                 });
 
-                console.log(`   Highlighted square at [${move.row},${move.col}]`);
+                this.storeLog(`   Highlighted square at [${move.row},${move.col}]`);
             }
         });
     }
@@ -1332,7 +1389,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 this.renderAllPieces();
                 this.updateTurnDisplay();
                 this.showStatusMessage('Game resynced!', 2000);
-                console.log('✅ Desync fixed successfully');
+                this.storeLog('✅ Desync fixed successfully');
             }
         } catch (error) {
             console.error('❌ Failed to fix desync:', error);
