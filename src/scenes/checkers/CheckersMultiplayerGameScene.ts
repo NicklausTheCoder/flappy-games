@@ -664,182 +664,122 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
 
     // Replace the makeMove method with this fixed version
-    // =========== HELPER FUNCTIONS (outside makeMove) ===========
-
-    private findCapturedPieces(fromRow: number, fromCol: number, toRow: number, toCol: number): { row: number; col: number }[] {
-        const captured: { row: number; col: number }[] = [];
-        const isCapture = Math.abs(toRow - fromRow) > 1;
-
-        if (!isCapture) return captured;
-
-        const rowDir = Math.sign(toRow - fromRow);
-        const colDir = Math.sign(toCol - fromCol);
-        const distance = Math.abs(toRow - fromRow);
-
-        for (let step = 1; step < distance; step++) {
-            const checkRow = fromRow + (rowDir * step);
-            const checkCol = fromCol + (colDir * step);
-            const pieceAtPath = this.board[checkRow][checkCol];
-
-            if (pieceAtPath) {
-                const isOpponent = (this.myColor === 'red') ? pieceAtPath.includes('black') : pieceAtPath.includes('red');
-                if (isOpponent) {
-                    captured.push({ row: checkRow, col: checkCol });
-                    this.piecesCapturedCount++;
-                }
-            }
-        }
-
-        return captured;
-    }
-
-    private checkMovePromotion(piece: string | null, toRow: number): boolean {
-        return (piece === 'red' && toRow === 0) || (piece === 'black' && toRow === 7);
-    }
-
-    private createMoveObject(
-        fromRow: number,
-        fromCol: number,
-        toRow: number,
-        toCol: number,
-        capturedPieces: { row: number; col: number }[],
-        piece: string,
-        isKingPromotion: boolean
-    ): GameMove {
-        const capturedPiece = capturedPieces.length > 0 ? capturedPieces[0] : null;
-        return {
-            fromRow,
-            fromCol,
-            toRow,
-            toCol,
-            capturedPiece,
-            piece,
-            timestamp: Date.now(),
-            playerUid: this.uid,
-            isKingPromotion
-        };
-    }
-
-    private async updateBoardAfterMove(
-        fromRow: number,
-        fromCol: number,
-        toRow: number,
-        toCol: number,
-        capturedPieces: { row: number; col: number }[],
-        isKingPromotion: boolean,
-        piece: string | null
-    ) {
-        // Move the piece
-        this.board[toRow][toCol] = this.board[fromRow][fromCol];
-        this.board[fromRow][fromCol] = null;
-
-        // Remove captured pieces
-        for (const cap of capturedPieces) {
-            this.board[cap.row][cap.col] = null;
-        }
-
-        // Handle promotion
-        if (isKingPromotion) {
-            this.board[toRow][toCol] = `king_${piece}`;
-        }
-    }
-
-    private async handleAdditionalCaptures(toRow: number, toCol: number): Promise<boolean> {
-        const additionalMoves = this.getValidMoves(toRow, toCol);
-        const additionalCaptures = additionalMoves.filter(move => Math.abs(move.row - toRow) > 1);
-
-        if (additionalCaptures.length > 0) {
-            console.log(`🔄 Piece can capture again! ${additionalCaptures.length} additional capture moves available`);
-
-            if (additionalCaptures.length === 1) {
-                this.showStatusMessage(`🎯 One more capture available!`, 1500);
-            } else {
-                this.showStatusMessage(`🎯 ${additionalCaptures.length} more captures available!`, 1500);
-            }
-
-            this.selectedPiece = { row: toRow, col: toCol };
-            this.validMoves = additionalMoves;
-            this.highlightValidMoves();
-
-            const visualRow = this.transformRowForDisplay(toRow);
-            this.addSelectedGlow(visualRow, toCol);
-
-            return true;
-        }
-
-        if (this.piecesCapturedCount > 0) {
-            this.showStatusMessage(`✅ ${this.piecesCapturedCount} pieces captured!`, 1500);
-        }
-
-        return false;
-    }
-
-    private async saveMoveAndEndTurn(move: GameMove, newCurrentPlayer: 'red' | 'black') {
-        const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
-
-        await update(gameStateRef, {
-            board: this.board,
-            currentPlayer: newCurrentPlayer,
-            lastMove: move,
-            lastMoveTimestamp: move.timestamp,
-            lastUpdated: Date.now()
-        });
-
-        await this.syncBoardToVisuals();
-
-        this.currentPlayer = newCurrentPlayer;
-        this.myTurn = (this.currentPlayer === this.myColor);
-        this.updateTurnDisplay();
-        this.showStatusMessage('Move sent!', 500);
-
-        this.selectedPiece = null;
-        this.validMoves = [];
-        this.clearHighlights();
-        this.removeSelectedGlow();
-
-        console.log(`✅ Move completed! Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
-
-        setTimeout(() => {
-            this.checkWinCondition();
-        }, 100);
-    }
-
-    // =========== MAIN MAKEMOVE FUNCTION ===========
 
     private async makeMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
         if (this.moveInProgress) return;
         this.moveInProgress = true;
         this.movesCount++;
+        // Check if this is a capture move
+        const isCapture = Math.abs(toRow - fromRow) > 1;
+        let capturedPieces: { row: number; col: number }[] = [];
 
-        // 1. Find captured pieces
-        const capturedPieces = this.findCapturedPieces(fromRow, fromCol, toRow, toCol);
+        if (isCapture) {
+            // For captures, find ALL pieces along the path that could be captured
+            const rowDir = Math.sign(toRow - fromRow);
+            const colDir = Math.sign(toCol - fromCol);
+            const distance = Math.abs(toRow - fromRow);
 
-        // 2. Check for promotion
-        const piece = this.board[fromRow][fromCol];
-        const isKingPromotion = this.checkMovePromotion(piece, toRow);
+            // Check each square along the path for possible captures
+            for (let step = 1; step < distance; step++) {
+                const checkRow = fromRow + (rowDir * step);
+                const checkCol = fromCol + (colDir * step);
+                const pieceAtPath = this.board[checkRow][checkCol];
 
-        // 3. Create move object
-        const move = this.createMoveObject(fromRow, fromCol, toRow, toCol, capturedPieces, piece!, isKingPromotion);
-
-        // 4. Animate the move
-        await this.animateMove(fromRow, fromCol, toRow, toCol, capturedPieces.length > 0 ? capturedPieces[0] : null, isKingPromotion);
-
-        // 5. Update board state
-        await this.updateBoardAfterMove(fromRow, fromCol, toRow, toCol, capturedPieces, isKingPromotion, piece);
-
-        // 6. Check for additional captures
-        const hasMoreCaptures = await this.handleAdditionalCaptures(toRow, toCol);
-
-        if (hasMoreCaptures) {
-            this.moveInProgress = false;
-            return;
+                if (pieceAtPath) {
+                    // Found a piece along the path - it's a capture
+                    const isOpponent = (this.myColor === 'red') ? pieceAtPath.includes('black') : pieceAtPath.includes('red');
+                    if (isOpponent) {
+                        capturedPieces.push({ row: checkRow, col: checkCol });
+                        this.piecesCapturedCount++;
+                    }
+                }
+            }
         }
 
-        // 7. Save move and end turn
-        const newCurrentPlayer = this.currentPlayer === 'red' ? 'black' : 'red';
-        await this.saveMoveAndEndTurn(move, newCurrentPlayer);
+        // Check for king promotion
+        const piece = this.board[fromRow][fromCol];
+        let isKingPromotion = false;
+        if ((piece === 'red' && toRow === 0) || (piece === 'black' && toRow === 7)) {
+            isKingPromotion = true;
+        }
 
-        this.moveInProgress = false;
+        // Create move object (use the first captured piece for backward compatibility)
+        const capturedPiece = capturedPieces.length > 0 ? capturedPieces[0] : null;
+        const move: GameMove = {
+            fromRow,
+            fromCol,
+            toRow,
+            toCol,
+            capturedPiece,
+            piece: piece!,
+            timestamp: Date.now(),
+            playerUid: this.uid,
+            isKingPromotion
+        };
+
+        // Animate the move locally first
+        await this.animateMove(fromRow, fromCol, toRow, toCol, capturedPiece, isKingPromotion);
+
+        // Update local board state
+        this.board[toRow][toCol] = this.board[fromRow][fromCol];
+        this.board[fromRow][fromCol] = null;
+
+        // Remove ALL captured pieces
+        for (const cap of capturedPieces) {
+            this.board[cap.row][cap.col] = null;
+        }
+
+        if (isKingPromotion) {
+            this.board[toRow][toCol] = `king_${piece}`;
+        }
+        const promoted = this.checkKingPromotion(toRow, toCol, piece);
+        if (promoted) {
+            // Update the board if promotion happened
+            this.board[toRow][toCol] = `king_${piece}`;
+        }
+        // Save move to Firebase
+        const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
+        const newCurrentPlayer = this.currentPlayer === 'red' ? 'black' : 'red';
+
+        try {
+            await update(gameStateRef, {
+                board: this.board,
+                currentPlayer: newCurrentPlayer,
+                lastMove: move,
+                lastMoveTimestamp: move.timestamp,
+                lastUpdated: Date.now()
+            });
+            await this.syncBoardToVisuals();
+            // Update local turn
+            this.currentPlayer = newCurrentPlayer;
+            this.myTurn = (this.currentPlayer === this.myColor);
+            this.updateTurnDisplay();
+            this.showStatusMessage('Move sent!', 500);
+
+            // Clear selection after move
+            this.selectedPiece = null;
+            this.validMoves = [];
+            this.clearHighlights();
+            this.removeSelectedGlow();
+
+            console.log(`✅ Move completed! Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
+
+            // Check for win condition
+            setTimeout(() => {
+                this.checkWinCondition();
+            }, 100);
+
+        } catch (error) {
+            console.error('Error making move:', error);
+            this.showStatusMessage('Failed to make move!', 1500);
+            const snapshot = await get(gameStateRef);
+            if (snapshot.exists()) {
+                this.board = snapshot.val().board;
+                this.renderAllPieces();
+            }
+        } finally {
+            this.moveInProgress = false;
+        }
     }
     private animateMove(fromRow: number, fromCol: number, toRow: number, toCol: number, capturedPiece: any, promoted: boolean): Promise<void> {
         return new Promise((resolve) => {
