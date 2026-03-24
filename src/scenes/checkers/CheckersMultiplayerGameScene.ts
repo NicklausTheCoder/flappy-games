@@ -135,6 +135,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.kingsMadeCount = 0;
         await this.initializeLogsPath();
         this.startLogBatching();
+        this.startDesyncChecker();
         // Load or initialize game state
         await this.initializeGameState();
 
@@ -471,7 +472,65 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
             const state = snapshot.val();
 
-            // Check if game has ended
+            // 🔥 PART 1: FORCE SYNC CHECK - ALWAYS RUN THIS FIRST 🔥
+            // Check if our local board matches Firebase exactly
+            let needsSync = false;
+
+            // Check if turns don't match
+            if (this.currentPlayer !== state.currentPlayer) {
+                this.storeLog(`⚠️ Turn desync! Local: ${this.currentPlayer}, Remote: ${state.currentPlayer}`);
+                needsSync = true;
+            }
+
+            // Check if board is different (quick check - compare piece counts or a sample)
+            // You can add a more thorough check if needed
+            if (!needsSync && this.board && state.board) {
+                // Quick check: compare piece counts
+                let localCount = 0;
+                let remoteCount = 0;
+                for (let i = 0; i < this.BOARD_SIZE; i++) {
+                    for (let j = 0; j < this.BOARD_SIZE; j++) {
+                        if (this.board[i]?.[j]) localCount++;
+                        if (state.board[i]?.[j]) remoteCount++;
+                    }
+                }
+                if (localCount !== remoteCount) {
+                    this.storeLog(`⚠️ Board desync! Local pieces: ${localCount}, Remote pieces: ${remoteCount}`);
+                    needsSync = true;
+                }
+            }
+
+            // FORCE SYNC - Load everything from Firebase
+            if (needsSync && !this.moveInProgress) {
+                this.storeLog(`🔄 FORCE SYNCING from Firebase...`);
+
+                // Deep copy the board from Firebase
+                this.board = JSON.parse(JSON.stringify(state.board));
+                this.currentPlayer = state.currentPlayer;
+                this.myTurn = (this.currentPlayer === this.myColor);
+
+                // Re-render everything
+                this.renderAllPieces();
+                this.updateTurnDisplay();
+
+                // Clear any pending selections
+                this.selectedPiece = null;
+                this.validMoves = [];
+                this.clearHighlights();
+                this.removeSelectedGlow();
+
+                this.storeLog(`✅ Sync complete. Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
+                this.showStatusMessage(`⚠️ Game synced! ${this.myTurn ? 'Your turn' : "Opponent's turn"}`, 1500);
+
+                // Update timestamp to prevent re-processing the same move
+                if (state.lastMoveTimestamp) {
+                    this.lastProcessedMoveTimestamp = state.lastMoveTimestamp;
+                }
+
+                return; // Don't process the move again
+            }
+
+            // PART 2: Check if game has ended
             if (state.winner && state.winner !== this.gameWinner) {
                 this.gameWinner = state.winner;
                 this.gameActive = false;
@@ -483,7 +542,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 return;
             }
 
-            // Check for new move - ONLY process if it's NOT our move
+            // PART 3: Check for new move
             const lastMoveTimestamp = state.lastMoveTimestamp || 0;
             if (lastMoveTimestamp > this.lastProcessedMoveTimestamp) {
                 const lastMove = state.lastMove;
@@ -499,8 +558,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 }
             }
 
-            // ONLY update currentPlayer if it's NOT the result of our own move
-            // and we're not in the middle of a move
+            // PART 4: Update turn if needed (but not already synced)
             if (this.currentPlayer !== state.currentPlayer && !this.moveInProgress) {
                 this.currentPlayer = state.currentPlayer;
                 this.myTurn = (this.currentPlayer === this.myColor);
@@ -753,10 +811,19 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 lastMoveTimestamp: move.timestamp,
                 lastUpdated: Date.now()
             });
+
+
             await this.syncBoardToVisuals();
+
+
             // Update local turn
             this.currentPlayer = newCurrentPlayer;
+
             this.myTurn = (this.currentPlayer === this.myColor);
+            this.storeLog(`✅ Move completed! Now it's ${this.currentPlayer}'s turn. My turn: ${this.myTurn}`);
+
+
+
             this.updateTurnDisplay();
             this.showStatusMessage('Move sent!', 500);
 
@@ -784,6 +851,53 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         } finally {
             this.moveInProgress = false;
         }
+    }
+    private startDesyncChecker() {
+        this.time.addEvent({
+            delay: 2000, // Check every 2 seconds
+            callback: () => {
+                if (!this.gameActive || this.moveInProgress) return;
+
+                // Check if it's our turn but we can't move any pieces
+                if (this.myTurn) {
+                    let hasMovablePiece = false;
+                    for (let row = 0; row < this.BOARD_SIZE; row++) {
+                        for (let col = 0; col < this.BOARD_SIZE; col++) {
+                            const piece = this.board[row][col];
+                            if (piece && ((piece.includes('red') && this.myColor === 'red') ||
+                                (piece.includes('black') && this.myColor === 'black'))) {
+                                const moves = this.getValidMoves(row, col);
+                                if (moves.length > 0) {
+                                    hasMovablePiece = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (hasMovablePiece) break;
+                    }
+
+                    // If it's our turn but no movable pieces, something is wrong
+                    if (!hasMovablePiece && this.gameActive) {
+                        this.storeLog(`⚠️ Desync warning: It's my turn but no movable pieces!`);
+
+                        // Force a state reload from Firebase
+                        const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
+                        get(gameStateRef).then(snapshot => {
+                            if (snapshot.exists()) {
+                                const state = snapshot.val();
+                                this.board = state.board;
+                                this.currentPlayer = state.currentPlayer;
+                                this.myTurn = (this.currentPlayer === this.myColor);
+                                this.renderAllPieces();
+                                this.updateTurnDisplay();
+                                this.storeLog(`✅ State synced. Current player: ${this.currentPlayer}, My turn: ${this.myTurn}`);
+                            }
+                        });
+                    }
+                }
+            },
+            loop: true
+        });
     }
     private animateMove(fromRow: number, fromCol: number, toRow: number, toCol: number, capturedPiece: any, promoted: boolean): Promise<void> {
         return new Promise((resolve) => {
@@ -1532,85 +1646,85 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     /**
      * Flush all buffered logs to Firebase
      */
-  private async flushLogs() {
-    if (this.logBuffer.length === 0) return;
+    private async flushLogs() {
+        if (this.logBuffer.length === 0) return;
 
-    const logsToSend = [...this.logBuffer];
-    this.logBuffer = [];
+        const logsToSend = [...this.logBuffer];
+        this.logBuffer = [];
 
-    try {
-        const updates: any = {};
+        try {
+            const updates: any = {};
 
-        for (const log of logsToSend) {
-            const logKey = Date.now() + '_' + Math.random().toString(36).substring(2, 8);
-            
-            // SANITIZE THE DATA - Remove undefined values
-            const sanitizedAdditionalData = this.sanitizeForFirebase(log.additionalData);
-            
-            const logEntry = {
-                timestamp: log.timestamp,
-                userId: this.uid,
-                lobbyId: this.lobbyId,
-                message: log.message,
-                myColor: this.myColor,
-                currentPlayer: this.currentPlayer,
-                myTurn: this.myTurn,
-                gameActive: this.gameActive,
-                additionalData: sanitizedAdditionalData || null
-            };
-            
-            console.log('Flushing log:', logEntry);
-            updates[`game_logs/${this.lobbyId}/${this.uid}/${logKey}`] = logEntry;
-        }
+            for (const log of logsToSend) {
+                const logKey = Date.now() + '_' + Math.random().toString(36).substring(2, 8);
 
-        await update(ref(db), updates);
-        
-        // Clean up old logs occasionally
-        if (Math.random() < 0.2) {
-            this.cleanupOldLogs();
-        }
+                // SANITIZE THE DATA - Remove undefined values
+                const sanitizedAdditionalData = this.sanitizeForFirebase(log.additionalData);
 
-    } catch (error) {
-        console.error('Failed to flush logs:', error);
-        // Put logs back in buffer on failure
-        this.logBuffer = [...logsToSend, ...this.logBuffer];
-    }
-}
+                const logEntry = {
+                    timestamp: log.timestamp,
+                    userId: this.uid,
+                    lobbyId: this.lobbyId,
+                    message: log.message,
+                    myColor: this.myColor,
+                    currentPlayer: this.currentPlayer,
+                    myTurn: this.myTurn,
+                    gameActive: this.gameActive,
+                    additionalData: sanitizedAdditionalData || null
+                };
 
-/**
- * Recursively remove undefined values and convert circular references
- */
-private sanitizeForFirebase(data: any): any {
-    if (data === undefined) return null;
-    if (data === null) return null;
-    
-    // Handle primitive types
-    if (typeof data !== 'object') return data;
-    
-    // Handle arrays
-    if (Array.isArray(data)) {
-        return data.map(item => this.sanitizeForFirebase(item)).filter(item => item !== undefined);
-    }
-    
-    // Handle objects
-    const sanitized: any = {};
-    for (const [key, value] of Object.entries(data)) {
-        // Skip undefined values
-        if (value === undefined) continue;
-        
-        // Recursively sanitize nested objects
-        if (value && typeof value === 'object') {
-            const nested = this.sanitizeForFirebase(value);
-            if (nested !== null && Object.keys(nested).length > 0) {
-                sanitized[key] = nested;
+                console.log('Flushing log:', logEntry);
+                updates[`game_logs/${this.lobbyId}/${this.uid}/${logKey}`] = logEntry;
             }
-        } else {
-            sanitized[key] = value;
+
+            await update(ref(db), updates);
+
+            // Clean up old logs occasionally
+            if (Math.random() < 0.2) {
+                this.cleanupOldLogs();
+            }
+
+        } catch (error) {
+            console.error('Failed to flush logs:', error);
+            // Put logs back in buffer on failure
+            this.logBuffer = [...logsToSend, ...this.logBuffer];
         }
     }
-    
-    return Object.keys(sanitized).length > 0 ? sanitized : null;
-}
+
+    /**
+     * Recursively remove undefined values and convert circular references
+     */
+    private sanitizeForFirebase(data: any): any {
+        if (data === undefined) return null;
+        if (data === null) return null;
+
+        // Handle primitive types
+        if (typeof data !== 'object') return data;
+
+        // Handle arrays
+        if (Array.isArray(data)) {
+            return data.map(item => this.sanitizeForFirebase(item)).filter(item => item !== undefined);
+        }
+
+        // Handle objects
+        const sanitized: any = {};
+        for (const [key, value] of Object.entries(data)) {
+            // Skip undefined values
+            if (value === undefined) continue;
+
+            // Recursively sanitize nested objects
+            if (value && typeof value === 'object') {
+                const nested = this.sanitizeForFirebase(value);
+                if (nested !== null && Object.keys(nested).length > 0) {
+                    sanitized[key] = nested;
+                }
+            } else {
+                sanitized[key] = value;
+            }
+        }
+
+        return Object.keys(sanitized).length > 0 ? sanitized : null;
+    }
     private async initializeLogsPath() {
         try {
             // Create the logs path structure
