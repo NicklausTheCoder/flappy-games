@@ -134,6 +134,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.piecesCapturedCount = 0;
         this.kingsMadeCount = 0;
         await this.initializeLogsPath();
+        await this.initializePingPath();  // Add this line
         this.startLogBatching();
         // Load or initialize game state
         await this.initializeGameState();
@@ -1096,7 +1097,26 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         // Start ping checking
         this.startPingCheck();
     }
+    private async initializePingPath() {
+        try {
+            const pingRef = ref(db, `ping/${this.lobbyId}`);
 
+            // Check if the path exists
+            const snapshot = await get(pingRef);
+
+            if (!snapshot.exists()) {
+                // Create the ping path structure
+                await set(pingRef, {
+                    initialized: true,
+                    createdAt: Date.now(),
+                    lobbyId: this.lobbyId
+                });
+                this.storeLog('📡 Ping path initialized in Firebase');
+            }
+        } catch (error) {
+            this.storeLog('Failed to initialize ping path:', error);
+        }
+    }
     private startPingCheck() {
         // Check ping every 3 seconds
         this.pingInterval = window.setInterval(async () => {
