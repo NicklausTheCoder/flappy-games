@@ -19,6 +19,10 @@ export class FlappyBirdGameScene extends Phaser.Scene {
   private countdownInterval!: Phaser.Time.TimerEvent;
   private pipeInterval!: Phaser.Time.TimerEvent;
 
+  private elapsedTime: number = 0;
+  private timerText!: Phaser.GameObjects.Text;
+  private speedMultiplier: number = 1;
+
   // Mobile optimization
   private isMobile: boolean;
 
@@ -39,6 +43,11 @@ export class FlappyBirdGameScene extends Phaser.Scene {
       return;
     }
 
+    this.elapsedTime = 0;
+    this.speedMultiplier = 1;
+    this.gameStarted = false;  // ADD THIS
+    this.gameOver = false;     // ADD THIS
+    this.score = 0;            // ADD THIS
     this.username = data.username;
     this.uid = data.uid;
     this.userData = data.userData;
@@ -80,6 +89,15 @@ export class FlappyBirdGameScene extends Phaser.Scene {
       strokeThickness: 4
     }).setOrigin(0.5, 0);
 
+
+    this.timerText = this.add.text(180, 15, '0s', {
+      fontSize: '16px',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 3
+    }).setOrigin(0.5, 0);
+
+
     // Get ready text
     this.add.text(180, 250, 'GET READY!', {
       fontSize: '28px',
@@ -106,12 +124,14 @@ export class FlappyBirdGameScene extends Phaser.Scene {
       padding: { x: 5, y: 2 }
     });
 
-    // Pipes group (clear any existing pipes)
+    this.physics.world.resume();
     if (this.pipes) {
-      this.pipes.clear(true, true);
-    } else {
-      this.pipes = this.physics.add.group();
+      this.pipes.destroy(true);
     }
+    this.pipes = this.physics.add.group();
+
+    // Always add the collider fresh every game
+    this.physics.add.collider(this.bird, this.pipes, () => this.gameOverHandler());
 
     // Input handlers
     this.setupInput();
@@ -156,17 +176,16 @@ export class FlappyBirdGameScene extends Phaser.Scene {
       this.bird = this.physics.add.sprite(100, 300, 'bird-frame1') as Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
       this.bird.setScale(0.1);
 
-      // Wait a frame for body to initialize
-      this.time.delayedCall(50, () => {
-        if (this.bird && this.bird.body) {
-          // Make collision body EXACTLY match the visual size
-          // Original bird image is likely around 40x40, scaled to 0.1 = 4x4 pixels
-          // Let's make it a bit bigger for better collision detection
-          this.bird.body.setSize(8, 8); // Slightly larger than visual for better feel
-          this.bird.body.setOffset(2, 2);
-          console.log('✅ Bird collision body adjusted');
-        }
-      });
+
+      if (this.bird && this.bird.body) {
+        // Make collision body EXACTLY match the visual size
+        // Original bird image is likely around 40x40, scaled to 0.1 = 4x4 pixels
+        // Let's make it a bit bigger for better collision detection
+        this.bird.body.setSize(300, 300); // texture-space pixels × scale = actual hitbox
+        this.bird.body.setOffset(0, 0);
+        console.log('✅ Bird collision body adjusted');
+      }
+
 
       // Create flying animation
       if (!this.anims.exists('fly')) {
@@ -276,7 +295,7 @@ export class FlappyBirdGameScene extends Phaser.Scene {
   startGame() {
     console.log('🚀 Game started');
     this.gameStarted = true;
-
+    this.elapsedTime = 0;
     // Stop the bobbing animation
     this.tweens.killTweensOf(this.bird);
 
@@ -293,15 +312,42 @@ export class FlappyBirdGameScene extends Phaser.Scene {
 
     // Start spawning pipes
     this.pipeInterval = this.time.addEvent({
-      delay: 1800,
+      delay: 1400,
       callback: this.addPipes,
       callbackScope: this,
       loop: true
     });
   }
 
-  update() {
+  update(time: number, delta: number) {
     if (!this.gameStarted || this.gameOver) return;
+
+
+    this.elapsedTime += delta / 1000;
+    const seconds = Math.floor(this.elapsedTime);
+    this.timerText.setText(`${seconds}s`);
+
+    // Speed up every 15 seconds
+    const newMultiplier = Math.min(1.8, 1 + Math.floor(this.elapsedTime / 15) * 0.8);
+
+
+    if (newMultiplier !== this.speedMultiplier) {
+      this.speedMultiplier = newMultiplier;
+      console.log('⚡ SPEED UP! multiplier:', this.speedMultiplier, '| time:', Math.floor(this.elapsedTime), 's');
+      // Update all existing pipes
+      this.pipes.getChildren().forEach((pipe: any) => {
+        pipe.setVelocityX(-150 * this.speedMultiplier);
+      });
+      // Flash the timer to signal speed up
+      this.tweens.add({
+        targets: this.timerText,
+        scaleX: 1.5,
+        scaleY: 1.5,
+        duration: 200,
+        yoyo: true
+      });
+    }
+
 
     // Rotate bird based on velocity
     if (this.bird.body) {
@@ -346,64 +392,40 @@ export class FlappyBirdGameScene extends Phaser.Scene {
   }
 
   addPipes() {
-    console.log('Adding pipes');
+    if (!this.textures.exists('pipe')) return;
 
-    if (!this.textures.exists('pipe')) {
-      console.warn('Pipe texture not found');
-      return;
-    }
-
-    // Dynamic gap size based on score - gets harder as score increases
-    let gapSize = 200; // Start easy
-
-    if (this.score > 20) {
-      gapSize = 160; // Hard
-    } else if (this.score > 10) {
-      gapSize = 180; // Medium
-    }
-
-    // Random gap position
+    let gapSize = this.score > 20 ? 160 : this.score > 10 ? 180 : 200;
     const gapY = Phaser.Math.Between(200, 400);
+    const pipeWidth = 52;
+    const groundLevel = 620;
 
-    // PIPE DIMENSIONS
-    const pipeWidth = 45;
-    const groundLevel = 620; // Ground Y position
-
-    // BOTTOM PIPE - positioned to reach the ground
     const bottomY = gapY + gapSize / 2;
     const bottomHeight = groundLevel - bottomY;
 
     const bottomPipe = this.pipes.create(360, bottomY + bottomHeight / 2, 'pipe') as any;
-    bottomPipe.setVelocityX(-150);
+    bottomPipe.setVelocityX(-150 * this.speedMultiplier);
     bottomPipe.setImmovable(true);
     bottomPipe.body.allowGravity = false;
     bottomPipe.scored = false;
-    bottomPipe.setScale(0.7);
+    // Use setDisplaySize ONLY — no setScale, no manual body.setSize
     bottomPipe.setDisplaySize(pipeWidth, bottomHeight);
+    bottomPipe.refreshBody(); // ← This is the key line you were missing
+    console.log('🟢 BOTTOM body bounds | top:', bottomPipe.body.top, '| bottom:', bottomPipe.body.bottom, '| left:', bottomPipe.body.left, '| right:', bottomPipe.body.right);
 
-    // Adjust collision body to match display size exactly
-    bottomPipe.body.setSize(pipeWidth, bottomHeight);
-    bottomPipe.body.setOffset(0, -bottomHeight / 2 + 20); // Adjust offset
 
-    // TOP PIPE - positioned from top
+
     const topY = gapY - gapSize / 2;
-    const topHeight = topY - 0; // From top of screen
+    const topHeight = topY;
 
-    const topPipe = this.pipes.create(360, topY - topHeight / 2, 'pipe') as any;
-    topPipe.setVelocityX(-150);
+    const topPipe = this.pipes.create(360, topHeight / 2, 'pipe') as any;
+    topPipe.setVelocityX(-150 * this.speedMultiplier);
     topPipe.setImmovable(true);
     topPipe.body.allowGravity = false;
     topPipe.setFlipY(true);
-    topPipe.setScale(0.7);
+    topPipe.scored = false;
     topPipe.setDisplaySize(pipeWidth, topHeight);
-
-    // Adjust collision body for top pipe
-    topPipe.body.setSize(pipeWidth, topHeight);
-    topPipe.body.setOffset(0, -topHeight / 2 + 20);
-
-    // Add collision with pixel-perfect detection
-    this.physics.add.collider(this.bird, bottomPipe, () => this.gameOverHandler());
-    this.physics.add.collider(this.bird, topPipe, () => this.gameOverHandler());
+    topPipe.refreshBody(); // ← Same here
+    console.log('🔴 TOP body bounds | top:', topPipe.body.top, '| bottom:', topPipe.body.bottom, '| left:', topPipe.body.left, '| right:', topPipe.body.right);
 
     // Scoring system
     this.time.delayedCall(100, () => {
@@ -437,7 +459,13 @@ export class FlappyBirdGameScene extends Phaser.Scene {
 
   gameOverHandler() {
     if (this.gameOver) return;
-
+    console.log('💥 COLLISION DETAILS:');
+    console.log('  Bird | x:', Math.round(this.bird.x), '| y:', Math.round(this.bird.y));
+    console.log('  Bird body | x:', Math.round(this.bird.body.x), '| y:', Math.round(this.bird.body.y), '| w:', this.bird.body.width, '| h:', this.bird.body.height);
+    this.pipes.getChildren().forEach((pipe: any, i: number) => {
+      const dx = Math.abs(pipe.x - this.bird.x);
+      console.log(`  Pipe[${i}] | x:`, Math.round(pipe.x), '| y:', Math.round(pipe.y), '| w:', pipe.body.width, '| h:', pipe.body.height, '| dist from bird:', Math.round(dx));
+    });
     console.log('💀 Game Over! Final score:', this.score);
     this.gameOver = true;
     this.physics.pause();

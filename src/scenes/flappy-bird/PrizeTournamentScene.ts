@@ -43,7 +43,7 @@ export class PrizeTournamentScene extends Phaser.Scene {
         }).setOrigin(0.5);
 
         // Subtitle - every 4 hours
-        this.add.text(180, 55, 'Every 4 hours • Top player wins 40% of pool', {
+        this.add.text(180, 55, 'Every 4 hours • Top player wins from pool', {
             fontSize: '12px',
             color: '#ffffff'
         }).setOrigin(0.5);
@@ -241,9 +241,9 @@ export class PrizeTournamentScene extends Phaser.Scene {
             color: '#ffff00',
             fontStyle: 'bold'
         }).setOrigin(0.5);
-
+const potentialPrize = Math.round(this.tournamentStatus.totalPool * 0.4 * 100) / 100;
         // Pool and players
-        this.poolText = this.add.text(90, 150, `💰 $${this.tournamentStatus.totalPool}`, {
+        this.poolText = this.add.text(90, 150, `💰 $${potentialPrize}`, {
             fontSize: '18px',
             color: '#00ff00',
             fontStyle: 'bold'
@@ -256,11 +256,8 @@ export class PrizeTournamentScene extends Phaser.Scene {
         });
 
         // Prize pool info
-        const potentialPrize = Math.round(this.tournamentStatus.totalPool * 0.4 * 100) / 100;
-        this.add.text(180, 185, `Winner takes 40% = $${potentialPrize}`, {
-            fontSize: '14px',
-            color: '#ffd700'
-        }).setOrigin(0.5);
+      
+
 
         // Current leaders section
         this.add.text(180, 220, '🏅 CURRENT LEADERS', {
@@ -398,9 +395,8 @@ export class PrizeTournamentScene extends Phaser.Scene {
 
         const rules = [
             '• Tournament resets every 4 hours',
-            '• Every game adds $1 to prize pool',
-            '• Top player wins 40% of pool',
-            '• Rest 60% goes to platform',
+            '• Every game adds to the prize pool',
+            '• Top player wins',
             '• Win automatically credited to wallet',
             '',
             '⏰ Periods:',
@@ -449,13 +445,11 @@ export class PrizeTournamentScene extends Phaser.Scene {
     // In PrizeTournamentScene.ts, update the startTimer method:
 
     private startTimer() {
-        // Clear any existing timer first
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
         }
 
-        this.timerInterval = setInterval(() => {
-            // Check if the scene is still active and timerText exists
+        this.timerInterval = setInterval(async () => {
             if (!this.scene.isActive() || !this.timerText || !this.timerText.active) {
                 this.shutdown();
                 return;
@@ -465,13 +459,17 @@ export class PrizeTournamentScene extends Phaser.Scene {
                 this.tournamentStatus.timeRemaining -= 1000;
                 this.timerText.setText(this.formatTime(this.tournamentStatus.timeRemaining));
 
-                // Refresh every minute to update pool/players
+                // Refresh every minute
                 if (this.tournamentStatus.timeRemaining % 60000 === 0) {
-                    this.loadTournamentData();
+                    await this.loadTournamentData();
                 }
             } else {
-                // Tournament just ended
-                this.loadTournamentData();
+                // ← Period just ended — load the NEW period and redraw
+                clearInterval(this.timerInterval);
+                this.timerInterval = null;
+                await this.loadTournamentData(); // This fetches the new period ID
+                this.children.removeAll(true);  // Clear screen
+                await this.create();            // Redraw with new period data
             }
         }, 1000);
     }

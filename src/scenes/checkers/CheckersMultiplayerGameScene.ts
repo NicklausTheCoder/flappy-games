@@ -1520,17 +1520,25 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.gameActive = false;
 
         // Calculate game statistics
-        const playerWon = (message.includes('YOU WIN') || message.includes('HOST WINS') || message.includes('JOINER WINS')) &&
-            ((this.myColor === 'red' && message.includes('RED')) ||
-                (this.myColor === 'black' && message.includes('BLACK')) ||
-                message.includes('YOU WIN'));
+        const playerWon = (message.includes('YOU WIN') ||
+            (this.myColor === 'red' && message.includes('RED')) ||
+            (this.myColor === 'black' && message.includes('BLACK')) ||
+            message.includes('YOU WIN'));
 
-        // Navigate to Game Over Scene with all the stats
+        // ✅ FIX: Determine actual winner color
+        let winnerColor: 'red' | 'black';
+        if (playerWon) {
+            winnerColor = this.myColor;
+        } else {
+            winnerColor = this.myColor === 'red' ? 'black' : 'red';
+        }
+
+        // Navigate to Game Over Scene with correct winner
         this.scene.start('CheckersGameOverScene', {
             userData: this.userData,
             username: this.username,
             uid: this.uid,
-            winner: this.currentPlayer === 'red' ? 'black' : 'red', // Winner is the opposite of current player when game ends
+            winner: winnerColor,  // ✅ Pass correct winner color
             playerColor: this.myColor,
             piecesCaptured: this.piecesCapturedCount,
             kingsMade: this.kingsMadeCount,

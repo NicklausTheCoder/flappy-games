@@ -139,10 +139,6 @@ private async storeScoreInDatabase() {
       color: '#888888'
     }).setOrigin(0.5);
 
-    // Play Again button
-    const playAgainBtn = this.createButton(180, 400, '🔄 PLAY AGAIN', '#4CAF50', () => {
-      this.deductAndPlay();
-    });
 
     // Scores button
     const scoresBtn = this.createButton(180, 470, '📊 VIEW SCORES', '#2196F3', () => {

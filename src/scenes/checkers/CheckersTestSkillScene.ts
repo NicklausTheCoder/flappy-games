@@ -1,794 +1,705 @@
 // src/scenes/checkers/CheckersTestSkillScene.ts
 import Phaser from 'phaser';
 import { CheckersUserData } from '../../firebase/checkersService';
+import { checkersMultiplayer, CheckersGameState } from '../../firebase/checkersMultiplayertwo';
 
 export class CheckersTestSkillScene extends Phaser.Scene {
-    // Add these properties to your CheckersGameScene class
-    private gameStartTime: number = 0;
-    private movesCount: number = 0;
-    private piecesCapturedCount: number = 0;
-    private kingsMadeCount: number = 0;
-    private username: string = '';
-    private uid: string = '';
-    private userData: CheckersUserData | null = null;
-    
-    // Game state
-    private board: (string | null)[][] = [];
-    private currentPlayer: 'red' | 'black' = 'red';
-    private selectedPiece: { row: number; col: number } | null = null;
-    private validMoves: { row: number; col: number }[] = [];
-    private gameActive: boolean = true;
+  // ─── Tracking ───────────────────────────────────────────────────────────────
+  private gameStartTime: number = 0;
+  private movesCount: number = 0;
+  private piecesCapturedCount: number = 0;
+  private kingsMadeCount: number = 0;
 
-    // REMOVED AI properties - now for 2 players
-    // private isAIPlaying: boolean = true;
-    // private aiThinking: boolean = false;
-    // private aiMoveDelay: number = 800;
+  // ─── Auth ────────────────────────────────────────────────────────────────────
+  private username: string = '';
+  private uid: string = '';
+  private userData: CheckersUserData | null = null;
 
-    // Visual elements
-    private squares: Phaser.GameObjects.Rectangle[][] = [];
-    private pieces: (Phaser.GameObjects.Image | null)[][] = [];
-    private crowns: (Phaser.GameObjects.Image | null)[][] = [];
-    private turnText!: Phaser.GameObjects.Text;
-    private messageText!: Phaser.GameObjects.Text;
-    private player1NameText!: Phaser.GameObjects.Text;
-    private player2NameText!: Phaser.GameObjects.Text;
+  // ─── Online multiplayer ──────────────────────────────────────────────────────
+  private gameId: string = '';
+  private myColor: 'red' | 'black' = 'red';
+  private unsubscribeGame: (() => void) | null = null;
+  private heartbeatTimer: Phaser.Time.TimerEvent | null = null;
+  private opponentLastSeen: number = Date.now();
+  private readonly DISCONNECT_TIMEOUT_MS = 15_000; // 15 s
 
-    // Constants for mobile (360x640)
-    private readonly BOARD_SIZE = 8;
-    private readonly SQUARE_SIZE = 38;
-    private readonly BOARD_OFFSET_X = 28;
-    private readonly BOARD_OFFSET_Y = 110;
+  // ─── Game state (local mirror — truth lives in Firebase) ─────────────────────
+  private board: (string | null)[][] = [];
+  private currentPlayer: 'red' | 'black' = 'red';
+  private selectedPiece: { row: number; col: number } | null = null;
+  private validMoves: { row: number; col: number }[] = [];
+  private gameActive: boolean = false; // stays false until both players present
 
-    constructor() {
-        super({ key: 'CheckersTestSkillScene' });
+  // ─── Visual elements ─────────────────────────────────────────────────────────
+  private squares: Phaser.GameObjects.Rectangle[][] = [];
+  private pieces: (Phaser.GameObjects.Image | null)[][] = [];
+  private crowns: (Phaser.GameObjects.Image | null)[][] = [];
+  private turnText!: Phaser.GameObjects.Text;
+  private messageText!: Phaser.GameObjects.Text;
+  private player1NameText!: Phaser.GameObjects.Text;
+  private player2NameText!: Phaser.GameObjects.Text;
+  private waitingOverlay!: Phaser.GameObjects.Container;
+
+  // ─── Board constants (mobile 360×640) ────────────────────────────────────────
+  private readonly BOARD_SIZE = 8;
+  private readonly SQUARE_SIZE = 38;
+  private readonly BOARD_OFFSET_X = 28;
+  private readonly BOARD_OFFSET_Y = 110;
+
+  constructor() {
+    super({ key: 'CheckersTestSkillScene' });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Lifecycle
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  init(data: { username: string; uid: string; userData: CheckersUserData }) {
+    if (!data?.username || !data?.uid) {
+      console.error('❌ No username/uid — redirecting to start');
+      this.scene.start('CheckersStartScene');
+      return;
     }
 
-    init(data: { username: string; uid: string; userData: CheckersUserData }) {
-        console.log('♟️ Checkers 2-Player game started for:', data.username);
+    this.username = data.username;
+    this.uid = data.uid;
+    this.userData = data.userData;
 
-        if (!data || !data.username || !data.uid) {
-            console.error('❌ No username or UID provided to CheckersTestSkillScene');
-            this.scene.start('CheckersStartScene');
-            return;
+    this.gameStartTime = Date.now();
+    this.movesCount = 0;
+    this.piecesCapturedCount = 0;
+    this.kingsMadeCount = 0;
+  }
+
+  preload() {
+    this.load.image('red_normal', 'assets/checkers/red_normal.jpg');
+    this.load.image('red_king', 'assets/checkers/red_king.jpg');
+    this.load.image('black_normal', 'assets/checkers/black_normal.jpg');
+    this.load.image('black_king', 'assets/checkers/black_king.jpg');
+  }
+
+  async create() {
+    this.cameras.main.setBackgroundColor('#2a2a2a');
+
+    this.initializeArrays();
+    this.createBoard();
+    this.createUI();
+    this.setupInput();
+
+    // Show "connecting…" while Firebase call resolves
+    this.showWaitingOverlay('🔌 Connecting…');
+
+    try {
+      const { gameId, color } = await checkersMultiplayer.findOrCreateGame(
+        this.uid,
+        this.username
+      );
+
+      this.gameId = gameId;
+      this.myColor = color;
+
+      console.log(`✅ I am ${color.toUpperCase()} in game ${gameId}`);
+
+      // Subscribe to live game state
+      this.unsubscribeGame = checkersMultiplayer.subscribeToGame(
+        gameId,
+        (state) => this.onGameStateChanged(state)
+      );
+
+      // Send heartbeats every 5 s so opponent can detect disconnect
+      this.heartbeatTimer = this.time.addEvent({
+        delay: 5_000,
+        loop: true,
+        callback: () => {
+          checkersMultiplayer.heartbeat(this.uid, this.gameId, this.myColor);
         }
+      });
 
-        this.username = data.username;
-        this.uid = data.uid;
-        this.userData = data.userData;
+      this.updatePlayerLabels();
 
-        // Initialize counters
-        this.gameStartTime = Date.now();
-        this.movesCount = 0;
-        this.piecesCapturedCount = 0;
-        this.kingsMadeCount = 0;
+      if (color === 'red') {
+        this.showWaitingOverlay('⏳ Waiting for opponent…');
+      } else {
+        this.hideWaitingOverlay();
+      }
 
-        console.log('👤 Playing as Red (Bottom):', this.username);
-        console.log('👤 Black player (Top): Player 2');
+    } catch (err) {
+      console.error('❌ Failed to connect to game:', err);
+      this.showWaitingOverlay('❌ Connection failed.\nTap to retry.');
+      this.input.once('pointerdown', () => this.scene.restart());
+    }
+  }
+
+  // Called by Phaser when the scene shuts down
+  shutdown() {
+    this.cleanup();
+  }
+
+  destroy() {
+    this.cleanup();
+  }
+
+  private cleanup() {
+    if (this.unsubscribeGame) {
+      this.unsubscribeGame();
+      this.unsubscribeGame = null;
+    }
+    if (this.heartbeatTimer) {
+      this.heartbeatTimer.destroy();
+      this.heartbeatTimer = null;
+    }
+    if (this.gameId && this.myColor) {
+      checkersMultiplayer.setOffline(this.uid, this.gameId, this.myColor);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Firebase → Local sync
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private onGameStateChanged(state: CheckersGameState | null) {
+    if (!state) return;
+
+    // ── Game finished ────────────────────────────────────────────────────────
+    if (state.status === 'finished' && state.winner) {
+      this.gameActive = false;
+      const iWon = state.winner === this.myColor;
+      this.gameOver(
+        iWon
+          ? `🎉 YOU WIN! (${this.myColor.toUpperCase()})`
+          : `😞 YOU LOSE! (${state.winner.toUpperCase()} wins)`
+      );
+      return;
     }
 
-    preload() {
-        // Load checker piece images
-        this.load.image('red_normal', 'assets/checkers/red_normal.jpg');
-        this.load.image('red_king', 'assets/checkers/red_king.jpg');
-        this.load.image('black_normal', 'assets/checkers/black_normal.jpg');
-        this.load.image('black_king', 'assets/checkers/black_king.jpg');
+    // ── Waiting for second player ────────────────────────────────────────────
+    if (state.status === 'waiting') {
+      this.showWaitingOverlay('⏳ Waiting for opponent…');
+      return;
     }
 
-    create() {
-        console.log('🎮 Creating 2-player checkers game...');
+    // ── Game is playing ──────────────────────────────────────────────────────
+    if (state.status === 'playing') {
+      this.hideWaitingOverlay();
+      this.gameActive = true;
 
-        // Set background
-        this.cameras.main.setBackgroundColor('#2a2a2a');
+      // Track opponent last-seen for disconnect detection
+      const opponentColor = this.myColor === 'red' ? 'black' : 'red';
+      const opponentData = state.players[opponentColor];
+      if (opponentData) {
+        this.opponentLastSeen = opponentData.lastSeen || Date.now();
+        this.updatePlayerLabels(
+          state.players.red?.username,
+          state.players.black?.username
+        );
+      }
 
-        // Initialize empty board
-        this.initializeBoard();
+      // Mirror board & turn from Firebase
+      this.board = state.board;
+      this.currentPlayer = state.currentTurn;
 
-        // Create the checkerboard
-        this.createBoard();
+      // Re-render all pieces from the authoritative board
+      this.renderBoardFromState();
+      this.updateTurnText();
 
-        // Place pieces
-        this.placePieces();
+      // Clear any pending selection (e.g. after we just moved)
+      this.deselectPiece();
 
-        // Create UI
-        this.createUI();
-
-        // Setup input
-        this.setupInput();
-
-        // Show current turn
-        this.updateTurnText();
-
-        console.log('✅ 2-Player checkers game created');
+      // Check for opponent disconnect
+      if (opponentData && Date.now() - opponentData.lastSeen > this.DISCONNECT_TIMEOUT_MS) {
+        this.handleOpponentDisconnect();
+      }
     }
+  }
 
-    private initializeBoard() {
-        for (let row = 0; row < this.BOARD_SIZE; row++) {
-            this.board[row] = [];
-            this.squares[row] = [];
-            this.pieces[row] = [];
-            this.crowns[row] = [];
-            for (let col = 0; col < this.BOARD_SIZE; col++) {
-                this.board[row][col] = null;
-                this.pieces[row][col] = null;
-                this.crowns[row][col] = null;
-            }
+  // ─── Re-render all pieces from this.board ───────────────────────────────────
+  private renderBoardFromState() {
+    // Destroy existing piece objects
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        if (this.pieces[row][col]) {
+          this.pieces[row][col]!.destroy();
+          this.pieces[row][col] = null;
         }
-    }
-
-    private createBoard() {
-        for (let row = 0; row < this.BOARD_SIZE; row++) {
-            for (let col = 0; col < this.BOARD_SIZE; col++) {
-                const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE;
-                const y = this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE;
-
-                const isPlayable = (row + col) % 2 === 1;
-                const color = isPlayable ? 0x8b4513 : 0xdeb887;
-
-                const square = this.add.rectangle(
-                    x + this.SQUARE_SIZE / 2,
-                    y + this.SQUARE_SIZE / 2,
-                    this.SQUARE_SIZE,
-                    this.SQUARE_SIZE,
-                    color
-                );
-
-                square.setStrokeStyle(1, 0x000000);
-                this.squares[row][col] = square;
-
-                if (isPlayable) {
-                    square.setInteractive({ useHandCursor: true });
-                    square.on('pointerdown', () => this.onSquareClick(row, col));
-                    square.on('pointerover', () => this.onSquareHover(row, col, true));
-                    square.on('pointerout', () => this.onSquareHover(row, col, false));
-                }
-            }
-        }
-
-        this.addCoordinates();
-    }
-
-    private addCoordinates() {
-        for (let row = 0; row < this.BOARD_SIZE; row++) {
-            this.add.text(
-                this.BOARD_OFFSET_X - 18,
-                this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE + this.SQUARE_SIZE / 2 - 8,
-                (8 - row).toString(),
-                { fontSize: '12px', color: '#ffffff' }
-            );
-        }
-
-        const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-        for (let col = 0; col < this.BOARD_SIZE; col++) {
-            this.add.text(
-                this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2 - 6,
-                this.BOARD_OFFSET_Y - 20,
-                letters[col],
-                { fontSize: '12px', color: '#ffffff' }
-            );
-        }
-    }
-
-    private placePieces() {
-        console.log('📍 Placing pieces on board...');
-
-        // Place black pieces (top of board) - Player 2 (Black)
-        for (let row = 0; row < 3; row++) {
-            for (let col = 0; col < this.BOARD_SIZE; col++) {
-                if ((row + col) % 2 === 1) {
-                    this.createPiece(row, col, 'black', false);
-                    this.board[row][col] = 'black';
-                    console.log(`   Black piece at [${row},${col}]`);
-                }
-            }
-        }
-
-        // Place red pieces (bottom of board) - Player 1 (Red)
-        for (let row = 5; row < 8; row++) {
-            for (let col = 0; col < this.BOARD_SIZE; col++) {
-                if ((row + col) % 2 === 1) {
-                    this.createPiece(row, col, 'red', false);
-                    this.board[row][col] = 'red';
-                    console.log(`   Red piece at [${row},${col}]`);
-                }
-            }
-        }
-    }
-
-    private createPiece(row: number, col: number, color: 'red' | 'black', isKing: boolean) {
-        const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
-        const y = this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
-
-        const texture = isKing ? `${color}_king` : `${color}_normal`;
-        const piece = this.add.image(x, y, texture);
-        piece.setDisplaySize(this.SQUARE_SIZE * 0.8, this.SQUARE_SIZE * 0.8);
-
-        // Make pieces interactive for BOTH colors now
-        piece.setInteractive({ useHandCursor: true });
-        piece.on('pointerdown', () => this.onPieceClick(row, col));
-        piece.on('pointerover', () => this.onPieceHover(row, col, true));
-        piece.on('pointerout', () => this.onPieceHover(row, col, false));
-
-        this.pieces[row][col] = piece;
-        this.crowns[row][col] = null;
-    }
-
-    private createUI() {
-        // Turn indicator
-        this.turnText = this.add.text(
-            180,
-            20,
-            `${this.currentPlayer === 'red' ? '🔴 RED' : '⚫ BLACK'} Player's Turn`,
-            { fontSize: '18px', color: '#ffffff', fontStyle: 'bold' }
-        ).setOrigin(0.5);
-
-        // Player names
-        this.player1NameText = this.add.text(
-            180,
-            620,
-            `🔴 ${this.username} (Bottom)`,
-            { fontSize: '12px', color: '#ff8888' }
-        ).setOrigin(0.5);
-
-        this.player2NameText = this.add.text(
-            180,
-            15,
-            `⚫ Player 2 (Top)`,
-            { fontSize: '12px', color: '#8888ff' }
-        ).setOrigin(0.5);
-
-        // Message area
-        this.messageText = this.add.text(
-            180,
-            610,
-            `${this.currentPlayer === 'red' ? 'Red' : 'Black'} player's turn - tap your piece`,
-            { fontSize: '14px', color: '#ffff00' }
-        ).setOrigin(0.5);
-    }
-
-    private setupInput() {
-        if (this.input.keyboard) {
-            this.input.keyboard.on('keydown-ESC', () => this.deselectPiece());
-        }
-    }
-
-    private onPieceClick(row: number, col: number) {
-        // Don't allow clicks if game is over
-        if (!this.gameActive) {
-            return;
-        }
-
-        console.log('\n========== PIECE CLICKED ==========');
-        console.log(`📍 Position: [${row},${col}]`);
-        console.log(`👤 Current player: ${this.currentPlayer}`);
-        console.log(`📦 Piece at position: "${this.board[row][col]}"`);
-        console.log(`🎯 Selected piece:`, this.selectedPiece);
-
-        const piece = this.board[row][col];
-
-        if (piece) {
-            console.log(`   Piece owner: ${piece}`);
-            console.log(`   Does piece belong to current player? ${piece.includes(this.currentPlayer)}`);
-
-            // Check if it's your turn and the piece belongs to you
-            if (piece.includes(this.currentPlayer)) {
-                console.log('✅ Your piece - selecting it');
-                this.selectPiece(row, col);
-            }
-            // If it's opponent's piece and you have a piece selected (attempting capture)
-            else if (this.selectedPiece) {
-                console.log('⚔️ Attempting to capture opponent piece');
-                console.log(`   Selected piece: [${this.selectedPiece.row},${this.selectedPiece.col}]`);
-                console.log(`   Target piece: [${row},${col}]`);
-                this.tryMove(this.selectedPiece.row, this.selectedPiece.col, row, col);
-            }
-            // If it's opponent's piece and it's their turn
-            else {
-                console.log('❌ Opponent piece clicked with no selected piece');
-                this.messageText.setText(`It's ${this.currentPlayer === 'red' ? 'RED' : 'BLACK'} player's turn`);
-            }
-        } else {
-            console.log('❌ Clicked on empty square (should not happen via piece click)');
-        }
-        console.log('====================================\n');
-    }
-
-    private onSquareClick(row: number, col: number) {
-        // Don't allow clicks if game is over
-        if (!this.gameActive) {
-            return;
-        }
-
-        console.log('\n========== SQUARE CLICKED ==========');
-        console.log(`📍 Position: [${row},${col}]`);
-        console.log(`👤 Current player: ${this.currentPlayer}`);
-        console.log(`🎯 Selected piece:`, this.selectedPiece);
-
-        if (!this.selectedPiece) {
-            console.log('❌ No piece selected');
-            return;
-        }
-
-        // Make sure it's still your turn
-        const selectedPieceColor = this.board[this.selectedPiece.row][this.selectedPiece.col];
-        console.log(`   Selected piece color: "${selectedPieceColor}"`);
-
-        if (!selectedPieceColor?.includes(this.currentPlayer)) {
-            console.log('❌ Selected piece no longer belongs to current player');
-            this.deselectPiece();
-            this.messageText.setText(`It's ${this.currentPlayer === 'red' ? 'RED' : 'BLACK'} player's turn`);
-            return;
-        }
-
-        // Try to move selected piece to this square
-        console.log(`   Attempting move from [${this.selectedPiece.row},${this.selectedPiece.col}] to [${row},${col}]`);
-        this.tryMove(this.selectedPiece.row, this.selectedPiece.col, row, col);
-        console.log('====================================\n');
-    }
-
-    private selectPiece(row: number, col: number) {
-        console.log(`\n🔍 Selecting piece at [${row},${col}]`);
-
-        this.deselectPiece();
-        this.selectedPiece = { row, col };
-        this.validMoves = this.getValidMoves(row, col);
-        console.log(`   Valid moves:`, this.validMoves.map(m => `[${m.row},${m.col}]`).join(', ') || 'none');
-
-        this.highlightValidMoves();
-        this.messageText.setText(`Selected ${this.getSquareName(row, col)}`);
-    }
-
-    private deselectPiece() {
-        if (this.selectedPiece) {
-            console.log(`\n🔽 Deselecting piece at [${this.selectedPiece.row},${this.selectedPiece.col}]`);
-            this.selectedPiece = null;
-        }
-
-        this.clearMoveHighlights();
-        this.validMoves = [];
-    }
-
-    private tryMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
-        console.log(`\n🔄 Trying move from [${fromRow},${fromCol}] to [${toRow},${toCol}]`);
-
-        const isValid = this.validMoves.some(move => move.row === toRow && move.col === toCol);
-        console.log(`   Is valid move? ${isValid}`);
-
-        if (isValid) {
-            console.log('✅ Valid move - executing');
-            this.executeMove(fromRow, fromCol, toRow, toCol);
-        } else {
-            if (!this.selectedPiece) {
-                console.log('❌ No piece selected');
-                this.messageText.setText('Select your piece first');
-                return;
-            }
-
-            const targetPiece = this.board[toRow][toCol];
-            console.log(`   Target piece: "${targetPiece}"`);
-
-            if (targetPiece && targetPiece.includes(this.currentPlayer)) {
-                console.log('✅ Clicked on own piece - selecting it instead');
-                this.selectPiece(toRow, toCol);
-                return;
-            }
-
-            console.log('❌ Invalid move');
-            this.messageText.setText('❌ Invalid move!');
-
-            this.squares[toRow][toCol].setFillStyle(0xff4444, 0.5);
-            this.time.delayedCall(300, () => {
-                this.squares[toRow][toCol].setFillStyle((toRow + toCol) % 2 === 1 ? 0x8b4513 : 0xdeb887);
-            });
-        }
-    }
-
-    private executeMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
-        console.log(`\n🎬 Executing move from [${fromRow},${fromCol}] to [${toRow},${toCol}]`);
-        this.movesCount++;
-        
-        const piece = this.board[fromRow][fromCol];
-        console.log(`   Moving piece: "${piece}"`);
-
-        this.board[fromRow][fromCol] = null;
-        this.board[toRow][toCol] = piece;
-
-        const pieceObj = this.pieces[fromRow][fromCol];
-
-        if (pieceObj) {
-            pieceObj.disableInteractive();
-        }
-
-        const targetX = this.BOARD_OFFSET_X + toCol * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
-        const targetY = this.BOARD_OFFSET_Y + toRow * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
-
-        this.tweens.add({
-            targets: pieceObj,
-            x: targetX,
-            y: targetY,
-            duration: 200,
-            ease: 'Power2',
-            onComplete: () => {
-                this.pieces[fromRow][fromCol] = null;
-                this.pieces[toRow][toCol] = pieceObj;
-
-                if (this.crowns[fromRow][fromCol]) {
-                    const crown = this.crowns[fromRow][fromCol];
-                    this.crowns[fromRow][fromCol] = null;
-                    this.crowns[toRow][toCol] = crown;
-
-                    this.tweens.add({
-                        targets: crown,
-                        x: targetX,
-                        y: targetY - 8,
-                        duration: 200,
-                        ease: 'Power2'
-                    });
-                }
-
-                // Re-enable interactivity at the new position for BOTH colors
-                if (pieceObj) {
-                    pieceObj.setInteractive({ useHandCursor: true });
-                    pieceObj.off('pointerdown');
-                    pieceObj.off('pointerover');
-                    pieceObj.off('pointerout');
-                    pieceObj.on('pointerdown', () => this.onPieceClick(toRow, toCol));
-                    pieceObj.on('pointerover', () => this.onPieceHover(toRow, toCol, true));
-                    pieceObj.on('pointerout', () => this.onPieceHover(toRow, toCol, false));
-                }
-
-                // Check for captures
-                const isKing = piece?.includes('king');
-                const rowDiff = Math.abs(toRow - fromRow);
-                const colDiff = Math.abs(toCol - fromCol);
-
-                if (rowDiff > 1 || colDiff > 1) {
-                    console.log(`   Capture detected! Removing pieces along the path`);
-
-                    const rowDir = toRow > fromRow ? 1 : -1;
-                    const colDir = toCol > fromCol ? 1 : -1;
-
-                    for (let step = 1; step < rowDiff; step++) {
-                        const captureRow = fromRow + (rowDir * step);
-                        const captureCol = fromCol + (colDir * step);
-
-                        if (this.board[captureRow][captureCol]) {
-                            console.log(`   Capturing piece at [${captureRow},${captureCol}]`);
-                            this.capturePiece(captureRow, captureCol);
-                        }
-                    }
-                }
-
-                // Check for king promotion
-                this.checkKingPromotion(toRow, toCol, piece);
-
-                // Switch turns
-                console.log(`   Switching turns from ${this.currentPlayer} to ${this.currentPlayer === 'red' ? 'black' : 'red'}`);
-                this.switchTurn();
-
-                // Check win condition
-                this.checkWinCondition();
-
-                console.log('✅ Move completed\n');
-            }
-        });
-
-        this.deselectPiece();
-    }
-
-    private capturePiece(row: number, col: number) {
-        console.log(`💥 Capturing piece at [${row},${col}]`);
-        this.piecesCapturedCount++;
-        
-        this.board[row][col] = null;
-
         if (this.crowns[row][col]) {
-            this.crowns[row][col]?.destroy();
-            this.crowns[row][col] = null;
+          this.crowns[row][col]!.destroy();
+          this.crowns[row][col] = null;
         }
-
-        const piece = this.pieces[row][col];
-        if (piece) {
-            piece.disableInteractive();
-
-            this.tweens.add({
-                targets: piece,
-                scale: 0,
-                alpha: 0,
-                duration: 200,
-                onComplete: () => {
-                    piece.destroy();
-                    this.pieces[row][col] = null;
-                }
-            });
-        }
-
-        this.messageText.setText('🔥 Captured!');
+      }
     }
 
-    private checkKingPromotion(row: number, col: number, piece: string | null) {
-        if (piece === 'red' && row === 0) {
-            console.log(`👑 Promoting red piece to king at [${row},${col}]`);
-            this.promoteToKing(row, col, 'red');
-        }
-        else if (piece === 'black' && row === 7) {
-            console.log(`👑 Promoting black piece to king at [${row},${col}]`);
-            this.promoteToKing(row, col, 'black');
-        }
-    }
+    // Recreate from board state
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        const cell = this.board[row][col];
+        if (!cell) continue;
 
-    private promoteToKing(row: number, col: number, color: string) {
-        const piece = this.pieces[row][col];
-        if (!piece) return;
-        
-        this.kingsMadeCount++;
-        this.board[row][col] = `king_${color}`;
-        piece.setTexture(`${color}_king`);
-        piece.setDisplaySize(this.SQUARE_SIZE * 0.8, this.SQUARE_SIZE * 0.8);
-        this.messageText.setText(`👑 ${color.toUpperCase()} KING!`);
+        const isKing = cell.includes('king');
+        const color = cell.includes('red') ? 'red' : 'black';
+        this.createPiece(row, col, color, isKing);
+      }
     }
+  }
 
-    private switchTurn() {
-        this.currentPlayer = this.currentPlayer === 'red' ? 'black' : 'red';
-        console.log(`🔄 Turn switched to: ${this.currentPlayer}`);
-        this.updateTurnText();
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Board setup
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private initializeArrays() {
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      this.board[row] = [];
+      this.squares[row] = [];
+      this.pieces[row] = [];
+      this.crowns[row] = [];
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        this.board[row][col] = null;
+        this.pieces[row][col] = null;
+        this.crowns[row][col] = null;
+      }
     }
+  }
 
-    private updateTurnText() {
-        this.turnText.setText(
-            `${this.currentPlayer === 'red' ? '🔴 RED' : '⚫ BLACK'} Player's Turn`
+  private createBoard() {
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE;
+        const y = this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE;
+
+        const isPlayable = (row + col) % 2 === 1;
+        const color = isPlayable ? 0x8b4513 : 0xdeb887;
+
+        const square = this.add.rectangle(
+          x + this.SQUARE_SIZE / 2,
+          y + this.SQUARE_SIZE / 2,
+          this.SQUARE_SIZE,
+          this.SQUARE_SIZE,
+          color
         );
-        this.messageText.setText(
-            `${this.currentPlayer === 'red' ? 'Red' : 'Black'} player's turn - tap your piece`
-        );
-    }
+        square.setStrokeStyle(1, 0x000000);
+        this.squares[row][col] = square;
 
-    private getValidMoves(row: number, col: number): { row: number; col: number }[] {
-        const moves: { row: number; col: number }[] = [];
-        const piece = this.board[row][col];
-
-        console.log(`\n📊 Calculating valid moves for piece at [${row},${col}] (${piece})`);
-
-        if (!piece) {
-            console.log('   No piece at this position');
-            return moves;
+        if (isPlayable) {
+          square.setInteractive({ useHandCursor: true });
+          square.on('pointerdown', () => this.onSquareClick(row, col));
+          square.on('pointerover', () => this.onSquareHover(row, col, true));
+          square.on('pointerout', () => this.onSquareHover(row, col, false));
         }
+      }
+    }
 
-        const isKing = piece.includes('king');
-        console.log(`   Is king? ${isKing}`);
-        console.log(`   Piece color: ${piece.includes('red') ? 'red' : 'black'}`);
+    this.addCoordinates();
+  }
 
-        const allDirections = [
-            { rowDir: -1, colDir: -1 },
-            { rowDir: -1, colDir: 1 },
-            { rowDir: 1, colDir: -1 },
-            { rowDir: 1, colDir: 1 }
-        ];
+  private addCoordinates() {
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      this.add.text(
+        this.BOARD_OFFSET_X - 18,
+        this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE + this.SQUARE_SIZE / 2 - 8,
+        (8 - row).toString(),
+        { fontSize: '12px', color: '#ffffff' }
+      );
+    }
+    const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    for (let col = 0; col < this.BOARD_SIZE; col++) {
+      this.add.text(
+        this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2 - 6,
+        this.BOARD_OFFSET_Y - 20,
+        letters[col],
+        { fontSize: '12px', color: '#ffffff' }
+      );
+    }
+  }
 
-        let allowedDirections: { rowDir: number; colDir: number }[] = [];
+  private createPiece(row: number, col: number, color: 'red' | 'black', isKing: boolean) {
+    const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+    const y = this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
 
-        if (isKing) {
-            allowedDirections = allDirections;
-            console.log(`   King - using all 4 directions`);
-        } else {
-            const direction = piece.includes('red') ? -1 : 1;
-            allowedDirections = allDirections.filter(dir => dir.rowDir === direction);
-            console.log(`   Regular piece - using direction: ${direction}`);
+    const texture = isKing ? `${color}_king` : `${color}_normal`;
+    const piece = this.add.image(x, y, texture);
+    piece.setDisplaySize(this.SQUARE_SIZE * 0.8, this.SQUARE_SIZE * 0.8);
+
+    piece.setInteractive({ useHandCursor: true });
+    piece.on('pointerdown', () => this.onPieceClick(row, col));
+    piece.on('pointerover', () => this.onPieceHover(row, col, true));
+    piece.on('pointerout', () => this.onPieceHover(row, col, false));
+
+    this.pieces[row][col] = piece;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // UI
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private createUI() {
+    this.turnText = this.add.text(180, 20, '', {
+      fontSize: '18px', color: '#ffffff', fontStyle: 'bold'
+    }).setOrigin(0.5);
+
+    this.player2NameText = this.add.text(180, 52, '⚫ Opponent', {
+      fontSize: '12px', color: '#8888ff'
+    }).setOrigin(0.5);
+
+    this.player1NameText = this.add.text(180, 628, `🔴 ${this.username}`, {
+      fontSize: '12px', color: '#ff8888'
+    }).setOrigin(0.5);
+
+    this.messageText = this.add.text(180, 612, 'Connecting…', {
+      fontSize: '14px', color: '#ffff00'
+    }).setOrigin(0.5);
+
+    // Back button
+    const backBtn = this.add.text(16, 630, '← Back', {
+      fontSize: '12px', color: '#aaaaaa'
+    }).setInteractive({ useHandCursor: true });
+    backBtn.on('pointerdown', () => this.goBack());
+  }
+
+  private updatePlayerLabels(redName?: string, blackName?: string) {
+    if (this.myColor === 'red') {
+      this.player1NameText?.setText(`🔴 ${this.username} (You)`);
+      this.player2NameText?.setText(`⚫ ${blackName ?? 'Waiting…'}`);
+    } else {
+      this.player1NameText?.setText(`⚫ ${this.username} (You)`);
+      this.player2NameText?.setText(`🔴 ${redName ?? 'Opponent'}`);
+    }
+  }
+
+  private showWaitingOverlay(msg: string) {
+    if (this.waitingOverlay) {
+      (this.waitingOverlay.getAt(1) as Phaser.GameObjects.Text)?.setText(msg);
+      this.waitingOverlay.setVisible(true);
+      return;
+    }
+
+    const bg = this.add.rectangle(180, 320, 320, 180, 0x000000, 0.75);
+    const text = this.add.text(180, 320, msg, {
+      fontSize: '18px',
+      color: '#ffffff',
+      align: 'center',
+      wordWrap: { width: 280 }
+    }).setOrigin(0.5);
+
+    this.waitingOverlay = this.add.container(0, 0, [bg, text]);
+    this.waitingOverlay.setDepth(10);
+  }
+
+  private hideWaitingOverlay() {
+    this.waitingOverlay?.setVisible(false);
+  }
+
+  private setupInput() {
+    this.input.keyboard?.on('keydown-ESC', () => this.deselectPiece());
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Input handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private isMyTurn(): boolean {
+    return this.gameActive && this.currentPlayer === this.myColor;
+  }
+
+  private onPieceClick(row: number, col: number) {
+    if (!this.isMyTurn()) {
+      this.messageText.setText("⏳ Wait for your turn!");
+      return;
+    }
+
+    const piece = this.board[row][col];
+    if (!piece) return;
+
+    if (piece.includes(this.myColor)) {
+      this.selectPiece(row, col);
+    } else if (this.selectedPiece) {
+      this.tryMove(this.selectedPiece.row, this.selectedPiece.col, row, col);
+    }
+  }
+
+  private onSquareClick(row: number, col: number) {
+    if (!this.isMyTurn()) return;
+    if (!this.selectedPiece) return;
+
+    this.tryMove(this.selectedPiece.row, this.selectedPiece.col, row, col);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Move logic (runs locally, then writes result to Firebase)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private selectPiece(row: number, col: number) {
+    this.deselectPiece();
+    this.selectedPiece = { row, col };
+    this.validMoves = this.getValidMoves(row, col);
+    this.highlightValidMoves();
+    this.messageText.setText(`Selected ${this.getSquareName(row, col)}`);
+  }
+
+  private deselectPiece() {
+    this.selectedPiece = null;
+    this.clearMoveHighlights();
+    this.validMoves = [];
+  }
+
+  private tryMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
+    const isValid = this.validMoves.some(m => m.row === toRow && m.col === toCol);
+
+    if (isValid) {
+      this.executeMove(fromRow, fromCol, toRow, toCol);
+      return;
+    }
+
+    const targetPiece = this.board[toRow][toCol];
+    if (targetPiece?.includes(this.myColor)) {
+      this.selectPiece(toRow, toCol);
+      return;
+    }
+
+    this.messageText.setText('❌ Invalid move!');
+    this.flashSquare(toRow, toCol, 0xff4444);
+  }
+
+  private executeMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
+    this.movesCount++;
+
+    // Deep copy board to mutate locally
+    const newBoard: (string | null)[][] = this.board.map(r => [...r]);
+
+    const piece = newBoard[fromRow][fromCol];
+    newBoard[fromRow][fromCol] = null;
+    newBoard[toRow][toCol] = piece;
+
+    // Handle captures
+    const rowDiff = Math.abs(toRow - fromRow);
+    const colDiff = Math.abs(toCol - fromCol);
+    if (rowDiff > 1 || colDiff > 1) {
+      const rowDir = toRow > fromRow ? 1 : -1;
+      const colDir = toCol > fromCol ? 1 : -1;
+      for (let step = 1; step < rowDiff; step++) {
+        const cr = fromRow + rowDir * step;
+        const cc = fromCol + colDir * step;
+        if (newBoard[cr][cc]) {
+          newBoard[cr][cc] = null;
+          this.piecesCapturedCount++;
         }
+      }
+    }
 
-        for (const dir of allowedDirections) {
-            if (!isKing) {
-                const newRow = row + dir.rowDir;
-                const newCol = col + dir.colDir;
+    // King promotion
+    if (piece === 'red' && toRow === 0) {
+      newBoard[toRow][toCol] = 'king_red';
+      this.kingsMadeCount++;
+    } else if (piece === 'black' && toRow === 7) {
+      newBoard[toRow][toCol] = 'king_black';
+      this.kingsMadeCount++;
+    }
 
-                if (this.isValidSquare(newRow, newCol) && !this.board[newRow][newCol]) {
-                    console.log(`   ✅ Valid regular move: [${newRow},${newCol}]`);
-                    moves.push({ row: newRow, col: newCol });
-                }
+    // Check win condition on new board
+    const redLeft = newBoard.flat().filter(p => p?.includes('red')).length;
+    const blackLeft = newBoard.flat().filter(p => p?.includes('black')).length;
+    const winner: 'red' | 'black' | null =
+      redLeft === 0 ? 'black' : blackLeft === 0 ? 'red' : null;
 
-                const jumpRow = row + dir.rowDir * 2;
-                const jumpCol = col + dir.colDir * 2;
-                const midRow = row + dir.rowDir;
-                const midCol = col + dir.colDir;
+    const nextTurn: 'red' | 'black' = this.myColor === 'red' ? 'black' : 'red';
 
-                if (this.isValidSquare(jumpRow, jumpCol)) {
-                    const midPiece = this.board[midRow][midCol];
-                    const jumpEmpty = !this.board[jumpRow][jumpCol];
+    // Push to Firebase — the subscription will update local state
+    checkersMultiplayer.submitMove(
+      this.gameId,
+      this.uid,
+      newBoard,
+      nextTurn,
+      { fromRow, fromCol, toRow, toCol },
+      winner
+    ).catch(err => {
+      console.error('❌ Failed to submit move:', err);
+      this.messageText.setText('❌ Network error — try again');
+    });
 
-                    if (midPiece && jumpEmpty) {
-                        const isOpponent = midPiece.includes(this.currentPlayer === 'red' ? 'black' : 'red');
+    this.deselectPiece();
+    this.messageText.setText('✅ Move sent…');
+  }
 
-                        if (isOpponent) {
-                            console.log(`   ✅ Valid capture: [${jumpRow},${jumpCol}] over [${midRow},${midCol}]`);
-                            moves.push({ row: jumpRow, col: jumpCol });
-                        }
-                    }
-                }
-            }
-            else {
-                let steps = 1;
-                let foundOpponent = false;
-                let opponentRow = -1;
-                let opponentCol = -1;
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Move calculation (same logic as original)
+  // ═══════════════════════════════════════════════════════════════════════════
 
-                while (true) {
-                    const newRow = row + dir.rowDir * steps;
-                    const newCol = col + dir.colDir * steps;
+  private getValidMoves(row: number, col: number): { row: number; col: number }[] {
+    const moves: { row: number; col: number }[] = [];
+    const piece = this.board[row][col];
+    if (!piece) return moves;
 
-                    if (!this.isValidSquare(newRow, newCol)) break;
+    const isKing = piece.includes('king');
+    const allDirections = [
+      { rowDir: -1, colDir: -1 }, { rowDir: -1, colDir: 1 },
+      { rowDir: 1, colDir: -1 }, { rowDir: 1, colDir: 1 }
+    ];
 
-                    const targetSquare = this.board[newRow][newCol];
+    let dirs = isKing
+      ? allDirections
+      : allDirections.filter(d => d.rowDir === (piece.includes('red') ? -1 : 1));
 
-                    if (!targetSquare) {
-                        if (!foundOpponent) {
-                            console.log(`   ✅ Valid king move: [${newRow},${newCol}]`);
-                            moves.push({ row: newRow, col: newCol });
-                            steps++;
-                        }
-                        else {
-                            console.log(`   ✅ Valid king capture: [${newRow},${newCol}] over [${opponentRow},${opponentCol}]`);
-                            moves.push({ row: newRow, col: newCol });
-                            break;
-                        }
-                    }
-                    else {
-                        const isOpponent = targetSquare.includes(this.currentPlayer === 'red' ? 'black' : 'red');
+    const opponentColor = this.myColor === 'red' ? 'black' : 'red';
 
-                        if (isOpponent) {
-                            if (foundOpponent) {
-                                console.log(`   ❌ Second opponent piece at [${newRow},${newCol}] - stop`);
-                                break;
-                            }
-
-                            foundOpponent = true;
-                            opponentRow = newRow;
-                            opponentCol = newCol;
-                            console.log(`   🔍 Found opponent piece at [${newRow},${newCol}]`);
-                            steps++;
-                        } else {
-                            console.log(`   ❌ Blocked by own piece at [${newRow},${newCol}]`);
-                            break;
-                        }
-                    }
-                }
-            }
+    for (const dir of dirs) {
+      if (!isKing) {
+        // Simple move
+        const nr = row + dir.rowDir;
+        const nc = col + dir.colDir;
+        if (this.inBounds(nr, nc) && !this.board[nr][nc]) {
+          moves.push({ row: nr, col: nc });
         }
-
-        console.log(`   Total valid moves: ${moves.length}`);
-        return moves;
-    }
-
-    private isValidSquare(row: number, col: number): boolean {
-        return row >= 0 && row < this.BOARD_SIZE && col >= 0 && col < this.BOARD_SIZE;
-    }
-
-    private highlightValidMoves() {
-        console.log(`🎨 Highlighting ${this.validMoves.length} valid moves`);
-        this.validMoves.forEach(move => {
-            const square = this.squares[move.row][move.col];
-            square.setFillStyle(0x44ff44, 0.5);
-        });
-    }
-
-    private clearMoveHighlights() {
-        for (let row = 0; row < this.BOARD_SIZE; row++) {
-            for (let col = 0; col < this.BOARD_SIZE; col++) {
-                if ((row + col) % 2 === 1) {
-                    this.squares[row][col].setFillStyle(0x8b4513);
-                }
-            }
+        // Jump
+        const jr = row + dir.rowDir * 2;
+        const jc = col + dir.colDir * 2;
+        const mr = row + dir.rowDir;
+        const mc = col + dir.colDir;
+        if (this.inBounds(jr, jc) && !this.board[jr][jc]) {
+          const mid = this.board[mr][mc];
+          if (mid?.includes(opponentColor)) {
+            moves.push({ row: jr, col: jc });
+          }
         }
-    }
-
-    private onSquareHover(row: number, col: number, isOver: boolean) {
-        if (!this.gameActive) return;
-
-        const square = this.squares[row][col];
-        if (!square) return;
-
-        if (isOver && !this.board[row][col]) {
-            square.setFillStyle(0xaa6d3b);
-        } else if (!isOver && (row + col) % 2 === 1) {
-            square.setFillStyle(0x8b4513);
+      } else {
+        // King sliding
+        let steps = 1;
+        let foundOpponent = false;
+        while (true) {
+          const nr = row + dir.rowDir * steps;
+          const nc = col + dir.colDir * steps;
+          if (!this.inBounds(nr, nc)) break;
+          const target = this.board[nr][nc];
+          if (!target) {
+            moves.push({ row: nr, col: nc });
+            if (foundOpponent) break;
+            steps++;
+          } else if (target.includes(opponentColor) && !foundOpponent) {
+            foundOpponent = true;
+            steps++;
+          } else {
+            break;
+          }
         }
+      }
     }
+    return moves;
+  }
 
-    private onPieceHover(row: number, col: number, isOver: boolean) {
-        if (!this.gameActive) return;
+  private inBounds(row: number, col: number): boolean {
+    return row >= 0 && row < this.BOARD_SIZE && col >= 0 && col < this.BOARD_SIZE;
+  }
 
-        const piece = this.pieces[row][col];
-        if (!piece) return;
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Visual helpers
+  // ═══════════════════════════════════════════════════════════════════════════
 
-        // Highlight pieces for BOTH players now
-        if (isOver && this.board[row][col]?.includes(this.currentPlayer)) {
-            piece.setTint(0xffffaa);
-        } else {
-            piece.clearTint();
+  private highlightValidMoves() {
+    this.validMoves.forEach(m => this.squares[m.row][m.col].setFillStyle(0x44ff44, 0.5));
+  }
+
+  private clearMoveHighlights() {
+    for (let row = 0; row < this.BOARD_SIZE; row++) {
+      for (let col = 0; col < this.BOARD_SIZE; col++) {
+        if ((row + col) % 2 === 1) {
+          this.squares[row][col].setFillStyle(0x8b4513);
         }
+      }
     }
+  }
 
-    private getSquareName(row: number, col: number): string {
-        const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-        return `${letters[col]}${8 - row}`;
+  private flashSquare(row: number, col: number, color: number) {
+    this.squares[row][col].setFillStyle(color, 0.5);
+    this.time.delayedCall(300, () => {
+      this.squares[row][col].setFillStyle((row + col) % 2 === 1 ? 0x8b4513 : 0xdeb887);
+    });
+  }
+
+  private onSquareHover(row: number, col: number, isOver: boolean) {
+    if (!this.gameActive) return;
+    if (isOver && !this.board[row][col]) {
+      this.squares[row][col].setFillStyle(0xaa6d3b);
+    } else if (!isOver && (row + col) % 2 === 1) {
+      this.squares[row][col].setFillStyle(0x8b4513);
     }
+  }
 
-    private checkWinCondition() {
-        const redPieces = this.board.flat().filter(p => p && p.includes('red')).length;
-        const blackPieces = this.board.flat().filter(p => p && p.includes('black')).length;
-
-        console.log(`🏁 Checking win condition - Red: ${redPieces}, Black: ${blackPieces}`);
-
-        if (redPieces === 0) {
-            console.log('🎉 BLACK WINS!');
-            this.gameOver('⚫ BLACK PLAYER WINS!');
-        } else if (blackPieces === 0) {
-            console.log('🎉 RED WINS!');
-            this.gameOver('🔴 RED PLAYER WINS!');
-        }
+  private onPieceHover(row: number, col: number, isOver: boolean) {
+    if (!this.gameActive) return;
+    const piece = this.pieces[row][col];
+    if (!piece) return;
+    if (isOver && this.board[row][col]?.includes(this.myColor) && this.isMyTurn()) {
+      piece.setTint(0xffffaa);
+    } else {
+      piece.clearTint();
     }
+  }
 
-    private gameOver(message: string) {
-        this.gameActive = false;
+  private updateTurnText() {
+    const isMyTurn = this.currentPlayer === this.myColor;
+    this.turnText.setText(
+      isMyTurn
+        ? `✅ Your turn (${this.myColor.toUpperCase()})`
+        : `⏳ ${this.currentPlayer.toUpperCase()} player's turn`
+    );
+    this.messageText.setText(
+      isMyTurn ? 'Tap one of your pieces' : 'Waiting for opponent…'
+    );
+  }
 
-        const gameOverText = this.add.text(180, 280, message, {
-            fontSize: '28px',
-            color: '#ffff00',
-            fontStyle: 'bold',
-            stroke: '#000000',
-            strokeThickness: 4
-        }).setOrigin(0.5);
+  private getSquareName(row: number, col: number): string {
+    return `${'ABCDEFGH'[col]}${8 - row}`;
+  }
 
-        this.add.text(180, 320, '📊 2-PLAYER MODE', {
-            fontSize: '14px',
-            color: '#888888'
-        }).setOrigin(0.5);
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Disconnect / end game
+  // ═══════════════════════════════════════════════════════════════════════════
 
-        this.add.text(180, 370, 'Tap to play again', {
-            fontSize: '16px',
-            color: '#ffffff'
-        }).setOrigin(0.5);
+  private handleOpponentDisconnect() {
+    if (!this.gameActive) return;
+    console.log('🔌 Opponent disconnected — forfeiting on their behalf');
+    checkersMultiplayer.forfeit(this.gameId, this.myColor === 'red' ? 'black' : 'red');
+  }
 
-        this.add.text(180, 400, '← Back to menu', {
-            fontSize: '12px',
-            color: '#aaaaaa'
-        }).setOrigin(0.5);
+  private gameOver(message: string) {
+    this.gameActive = false;
+    this.cleanup();
 
-        this.input.once('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            const y = pointer.y;
-            if (y > 380) {
-                this.goBack();
-            } else {
-                this.restartGame();
-            }
-        });
-    }
+    this.add.rectangle(180, 310, 300, 200, 0x000000, 0.8).setDepth(20);
 
-    private restartGame() {
-        console.log('🔄 Restarting 2-player game...');
+    this.add.text(180, 265, message, {
+      fontSize: '22px', color: '#ffff00', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 4, align: 'center',
+      wordWrap: { width: 270 }
+    }).setOrigin(0.5).setDepth(21);
 
-        this.children.removeAll(true);
+    this.add.text(180, 330, `Moves: ${this.movesCount} | Captures: ${this.piecesCapturedCount}`, {
+      fontSize: '13px', color: '#cccccc'
+    }).setOrigin(0.5).setDepth(21);
 
-        this.board = [];
-        this.squares = [];
-        this.pieces = [];
-        this.crowns = [];
-        this.selectedPiece = null;
-        this.validMoves = [];
-        this.currentPlayer = 'red';
-        this.gameActive = true;
+    const playAgain = this.add.text(180, 375, '🔄 Play again', {
+      fontSize: '18px', color: '#44ff44', backgroundColor: '#006600',
+      padding: { x: 12, y: 6 }
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(21);
+    playAgain.on('pointerdown', () => this.restartGame());
 
-        this.gameStartTime = Date.now();
-        this.movesCount = 0;
-        this.piecesCapturedCount = 0;
-        this.kingsMadeCount = 0;
+    const back = this.add.text(180, 420, '← Back to menu', {
+      fontSize: '13px', color: '#aaaaaa'
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(21);
+    back.on('pointerdown', () => this.goBack());
+  }
 
-        this.create();
-    }
+  private restartGame() {
+    this.cleanup();
+    this.scene.restart({
+      username: this.username,
+      uid: this.uid,
+      userData: this.userData
+    });
+  }
 
-    private goBack() {
-        console.log('🔙 Returning to Checkers start scene');
-        this.scene.start('CheckersStartScene', {
-            username: this.username,
-            uid: this.uid
-        });
-    }
+  private goBack() {
+    this.cleanup();
+    this.scene.start('CheckersStartScene', {
+      username: this.username,
+      uid: this.uid
+    });
+  }
 }
