@@ -1,7 +1,7 @@
 // src/scenes/checkers/CheckersMatchmakingScene.ts
 import Phaser from 'phaser';
 import { checkersMultiplayer } from '../../firebase/checkersMultiplayer';
-import { ref, get, onValue, remove, update } from 'firebase/database';
+import { ref, get, onValue, remove } from 'firebase/database';
 import { db } from '../../firebase/init';
 import { updateCheckersWalletBalance } from '../../firebase/checkersService';
 
@@ -11,12 +11,11 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
     private displayName: string = '';
     private avatar: string = '';
 
-    private searchTime: number = 0;
     private searchTimer!: Phaser.Time.TimerEvent;
-    private matchCheckInterval: number = 0;
     private cancelled: boolean = false;
     private matchFound: boolean = false;
-    private maxSearchTime: number = 60000; // 60 seconds max
+    private transitioning: boolean = false;
+    private maxSearchTime: number = 60000;
     private searchStartTime: number = 0;
 
     // UI Elements
@@ -33,9 +32,29 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
     }
 
     init(data: { username: string; uid: string; displayName?: string; avatar?: string; userData?: any }) {
-        console.log('♟️ CheckersMatchmakingScene init STARTED with data:', data);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('♟️ CheckersMatchmakingScene init STARTED');
+        console.log('📦 Data received:', data);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-        // Handle both possible data structures (like Ball Crush)
+        // CRITICAL: RESET ALL FLAGS to prevent stale state from previous matches
+        this.cancelled = false;
+        this.matchFound = false;
+        this.transitioning = false;
+        this.searchStartTime = 0;
+
+        // Clean up any existing timers/listeners
+        if (this.searchTimer) {
+            this.searchTimer.destroy();
+            this.searchTimer = null as any;
+        }
+
+        if (this.matchListener) {
+            this.matchListener();
+            this.matchListener = null;
+        }
+
+        // Parse user data
         if (data.userData) {
             this.username = data.username || data.userData.username || '';
             this.uid = data.uid || data.userData.uid || '';
@@ -48,34 +67,25 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
             this.avatar = data.avatar || 'default';
         }
 
-        console.log('✅ CheckersMatchmakingScene init SUCCESS:', {
-            username: this.username,
-            uid: this.uid,
-            displayName: this.displayName
-        });
+        console.log('✅ Parsed values:');
+        console.log('   username:', this.username);
+        console.log('   uid:', this.uid);
+        console.log('   displayName:', this.displayName);
+        console.log('   avatar:', this.avatar);
+        console.log('   flags reset: cancelled=false, matchFound=false, transitioning=false');
     }
-
     async create() {
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('🎬 CheckersMatchmakingScene create() started');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+        // Reset search start time
         this.searchStartTime = Date.now();
+        console.log(`⏰ Search start time: ${new Date(this.searchStartTime).toLocaleTimeString()}`);
+
+        // Set background
         this.cameras.main.setBackgroundColor('#1a1a2e');
         this.addBackgroundPieces();
-
-        // Refresh button
-        const refreshBtn = this.add.text(180, 550, '↻ REFRESH', {
-            fontSize: '16px',
-            color: '#ffffff',
-            backgroundColor: '#2196F3',
-            padding: { x: 15, y: 8 }
-        })
-            .setOrigin(0.5)
-            .setInteractive({ useHandCursor: true });
-
-        refreshBtn.on('pointerdown', async () => {
-            if (!this.matchFound && !this.cancelled) {
-                this.statusText.setText('Refreshing...');
-                await this.checkForMatch();
-            }
-        });
 
         // Title
         this.add.text(180, 100, '♟️ FINDING OPPONENT', {
@@ -124,10 +134,58 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
             .setInteractive({ useHandCursor: true });
 
         this.cancelBtn.on('pointerdown', () => {
+            console.log('🖱️ Cancel button clicked');
             this.cancelSearch();
         });
 
-        // Animate dots on search text
+        // STEP 1: Clear ANY existing match notifications FIRST (prevents stale matches)
+        console.log(`🗑️ Clearing any stale match notifications for ${this.uid}`);
+        await remove(ref(db, `matches/${this.uid}`));
+        console.log('✅ Stale match notifications cleared');
+
+        // STEP 2: Set up match listener
+        console.log(`📡 Setting up match listener for path: matches/${this.uid}`);
+        const matchRef = ref(db, `matches/${this.uid}`);
+        this.matchListener = onValue(matchRef, (snapshot) => {
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('🔔 MATCH LISTENER FIRED!');
+            console.log(`   Path: matches/${this.uid}`);
+            console.log(`   Snapshot exists: ${snapshot.exists()}`);
+            console.log(`   matchFound: ${this.matchFound}`);
+            console.log(`   transitioning: ${this.transitioning}`);
+            console.log(`   cancelled: ${this.cancelled}`);
+
+            if (snapshot.exists()) {
+                const match = snapshot.val();
+                console.log('   Match data:', match);
+            }
+
+            if (snapshot.exists() && !this.matchFound && !this.transitioning) {
+                const match = snapshot.val();
+                console.log('🎯 VALID MATCH - proceeding to lobby!');
+                console.log(`   lobbyId: ${match.lobbyId}`);
+                console.log(`   gameId: ${match.gameId}`);
+
+                // Remove the notification immediately
+                console.log(`🗑️ Removing match notification for ${this.uid}`);
+                remove(ref(db, `matches/${this.uid}`)).then(() => {
+                    console.log('✅ Match notification removed');
+                }).catch(err => {
+                    console.error('❌ Failed to remove match notification:', err);
+                });
+
+                this.handleMatchFound(match.lobbyId);
+            } else {
+                console.log('❌ Match IGNORED - conditions not met');
+                if (this.matchFound) console.log('   - matchFound is true');
+                if (this.transitioning) console.log('   - transitioning is true');
+                if (this.cancelled) console.log('   - cancelled is true');
+                if (!snapshot.exists()) console.log('   - snapshot does not exist');
+            }
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        });
+
+        // STEP 3: Animate search dots
         let dots = 0;
         this.searchTimer = this.time.addEvent({
             delay: 500,
@@ -135,89 +193,359 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
                 if (!this.matchFound && !this.cancelled) {
                     dots = (dots + 1) % 4;
                     this.searchText.setText('Searching' + '.'.repeat(dots));
-                    this.searchTime += 0.5;
-
-                    this.tweens.add({
-                        targets: this.searchText,
-                        scale: 1.05,
-                        duration: 200,
-                        yoyo: true,
-                        ease: 'Sine.easeInOut'
-                    });
                 }
             },
             loop: true
         });
 
-        // Join matchmaking queue
+        // STEP 4: Join matchmaking queue
+        console.log('📝 About to join queue...');
         await this.joinQueue();
 
-        // Keep-alive
-        // In CheckersMatchmakingScene.ts, increase the keep-alive frequency:
-
+        // STEP 5: Keep-alive interval (every 5 seconds)
+        console.log('🔄 Setting up keep-alive interval (every 5 seconds)');
         this.time.addEvent({
-            delay: 5000, // Every 5 seconds instead of 15
+            delay: 5000,
             callback: () => {
                 if (!this.cancelled && !this.matchFound) {
+                    console.log(`💓 Keep-alive ping for ${this.uid} at ${new Date().toLocaleTimeString()}`);
                     checkersMultiplayer.setPlayerOnline(this.uid, true);
                     checkersMultiplayer.setPlayerQueueStatus(this.uid, true);
-                    // Also update lastSeen
-                    update(ref(db, `online/${this.uid}`), {
-                        lastSeen: Date.now()
-                    });
                 }
             },
             loop: true
         });
 
-        // Listen for direct match notification (KEY FIX - like Ball Crush)
-        const matchRef = ref(db, `matches/${this.uid}`);
-        this.matchListener = onValue(matchRef, (snapshot) => {
-            if (snapshot.exists()) {
-                const match = snapshot.val();
-                console.log('🎯 DIRECT MATCH NOTIFICATION RECEIVED!', match);
+        // STEP 6: Update queue count periodically (every 2 seconds)
+        this.startQueueCountUpdater();
 
-                // Remove the notification so we don't get it again
-                remove(ref(db, `matches/${this.uid}`));
+        // STEP 7: Set timeout handler
+        console.log(`⏱️ Setting timeout for ${this.maxSearchTime}ms (${this.maxSearchTime / 1000} seconds)`);
+        this.time.delayedCall(this.maxSearchTime, () => {
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('⏰ TIMEOUT CHECK FIRED');
+            console.log(`   matchFound: ${this.matchFound}`);
+            console.log(`   cancelled: ${this.cancelled}`);
+            console.log(`   transitioning: ${this.transitioning}`);
 
-                // Stop checking
-                if (this.matchCheckInterval) {
-                    clearInterval(this.matchCheckInterval);
-                    this.matchCheckInterval = 0;
-                }
-
-                // Stop search timer
-                if (this.searchTimer) {
-                    this.searchTimer.destroy();
-                }
-
-                // Go to lobby immediately
-                this.goToLobby(match.lobbyId);
+            if (!this.matchFound && !this.cancelled && !this.transitioning) {
+                console.log('⚠️ Search timed out - handling timeout');
+                this.handleTimeout();
+            } else {
+                console.log('✅ Timeout ignored - match already found or cancelled');
             }
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         });
 
-        this.time.delayedCall(1000, async () => {
-            if (!this.matchFound && !this.cancelled) {
-                await this.checkForMatch();
+        console.log('✅ create() completed, waiting for match...');
+    }
+
+    private async joinQueue() {
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('🔍 joinQueue() called');
+        console.log(`   uid: ${this.uid}`);
+        console.log(`   username: ${this.username}`);
+        console.log(`   displayName: ${this.displayName}`);
+        console.log(`   avatar: ${this.avatar}`);
+
+        try {
+            console.log('📡 Checking current online status...');
+            const onlineStatus = await checkersMultiplayer.isPlayerOnline(this.uid);
+            console.log(`   Current online status: ${onlineStatus}`);
+
+            // Double-check: Clear any existing match notifications again
+            console.log('🗑️ Clearing any existing match notifications...');
+            await remove(ref(db, `matches/${this.uid}`));
+            console.log('✅ Match notifications cleared');
+
+            console.log('💰 Deducting $1 game fee...');
+            const feeSuccess = await updateCheckersWalletBalance(
+                this.uid,
+                -1.00,
+                'game_fee',
+                'Checkers game fee'
+            );
+
+            if (!feeSuccess) {
+                console.error('❌ Insufficient funds!');
+                // Use setTimeout to avoid Phaser text error during scene transition
+                setTimeout(() => {
+                    if (this.scene && this.scene.isActive()) {
+                        this.statusText.setText('❌ Insufficient funds!');
+                    }
+                }, 100);
+                this.time.delayedCall(2000, () => {
+                    this.scene.start('CheckersStartScene', {
+                        username: this.username,
+                        uid: this.uid
+                    });
+                });
+                return;
             }
+            console.log('✅ Game fee deducted successfully');
+
+            console.log('🎮 Calling checkersMultiplayer.joinQueue()...');
+            await checkersMultiplayer.joinQueue(
+                this.uid,
+                this.username,
+                this.displayName,
+                this.avatar
+            );
+
+            console.log('✅ Successfully joined queue!');
+
+            // Safely update UI text
+            setTimeout(() => {
+                if (this.scene && this.scene.isActive()) {
+                    this.statusText.setText('In queue - waiting for opponent...');
+                }
+            }, 100);
+
+            // Get queue count
+            const queueCount = await this.getQueueCount();
+            console.log(`📊 Current queue size: ${queueCount}`);
+
+        } catch (error) {
+            console.error('❌ Failed to join queue:', error);
+
+            // Safely update UI text
+            setTimeout(() => {
+                if (this.scene && this.scene.isActive()) {
+                    this.statusText.setText('Failed to join queue. Retrying...');
+                }
+            }, 100);
+
+
+            this.time.delayedCall(2000, () => {
+                console.log('🔄 Retrying joinQueue...');
+                this.joinQueue();
+            });
+        }
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    }
+
+
+
+
+    private async getQueueCount(): Promise<number> {
+        try {
+            const queueRef = ref(db, 'matchmaking/checkers');
+            const snapshot = await get(queueRef);
+            const count = snapshot.exists() ? Object.keys(snapshot.val()).length : 0;
+            console.log(`📊 Queue count: ${count}`);
+            return count;
+        } catch (error) {
+            console.error('Error getting queue count:', error);
+            return 0;
+        }
+    }
+
+    private async startQueueCountUpdater() {
+        console.log('🔄 Starting queue count updater (every 2 seconds)');
+        this.time.addEvent({
+            delay: 2000,
+            callback: async () => {
+                if (!this.matchFound && !this.cancelled) {
+                    const queueRef = ref(db, 'matchmaking/checkers');
+                    const snapshot = await get(queueRef);
+                    const count = snapshot.exists() ? Object.keys(snapshot.val()).length : 0;
+                    this.queueCountText.setText(`Players in queue: ${count}`);
+
+                    // Also log the actual players in queue occasionally
+                    if (count > 0 && Math.random() < 0.3) { // Log 30% of the time to avoid spam
+                        const players = snapshot.val();
+                        console.log(`👥 Players in queue:`, Object.keys(players).join(', '));
+                    }
+                }
+            },
+            loop: true
+        });
+    }
+
+    private handleMatchFound(lobbyId: string) {
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('🎉 handleMatchFound() called!');
+        console.log(`   lobbyId: ${lobbyId}`);
+        console.log(`   matchFound before: ${this.matchFound}`);
+        console.log(`   transitioning before: ${this.transitioning}`);
+
+        if (this.matchFound || this.transitioning) {
+            console.log('⚠️ Already handling a match, ignoring duplicate');
+            return;
+        }
+
+        this.matchFound = true;
+        this.transitioning = true;
+
+        console.log('✅ Match accepted!');
+        console.log(`   matchFound set to: ${this.matchFound}`);
+        console.log(`   transitioning set to: ${this.transitioning}`);
+
+        // Update UI
+        this.statusText.setText('Match found!');
+        this.searchText.setText('Opponent located!');
+        this.cameras.main.flash(500, 255, 255, 255);
+        console.log('✨ UI updated with match found visuals');
+
+        // Disable cancel button
+        this.cancelBtn.disableInteractive();
+        this.cancelBtn.setStyle({ backgroundColor: '#888888' });
+        console.log('🔘 Cancel button disabled');
+
+        // Stop timer
+        if (this.searchTimer) {
+            this.searchTimer.destroy();
+            console.log('⏹️ Search timer stopped');
+        }
+
+        // Clear queue status (no await needed here, fire and forget)
+        console.log('🗑️ Clearing queue status...');
+        checkersMultiplayer.setPlayerQueueStatus(this.uid, false).then(() => {
+            console.log('✅ Queue status cleared');
+        }).catch(err => {
+            console.error('❌ Failed to clear queue status:', err);
         });
 
-        // Start checking for match
-        this.startMatchChecking();
+        // Fade out and go to lobby
+        console.log('🎬 Starting fade out to lobby...');
+        this.cameras.main.fadeOut(800, 0, 0, 0);
+        this.cameras.main.once('camerafadeoutcomplete', () => {
+            console.log(`🚀 Transitioning to CheckersLobbyScene with lobbyId: ${lobbyId}`);
+            this.scene.start('CheckersLobbyScene', {
+                username: this.username,
+                uid: this.uid,
+                lobbyId: lobbyId
+            });
+        });
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    }
+
+    private async cancelSearch() {
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('🚪 cancelSearch() called');
+        console.log(`   cancelled before: ${this.cancelled}`);
+        console.log(`   matchFound before: ${this.matchFound}`);
+        console.log(`   transitioning before: ${this.transitioning}`);
+
+        if (this.cancelled || this.matchFound || this.transitioning) {
+            console.log('⚠️ Cancel ignored - already in progress or completed');
+            return;
+        }
+
+        this.cancelled = true;
+        this.transitioning = true;
+        console.log('✅ Cancel accepted');
+
+        this.statusText.setText('Cancelling...');
+        console.log('📝 Status updated to "Cancelling..."');
+
+        // Stop timer
+        if (this.searchTimer) {
+            this.searchTimer.destroy();
+            console.log('⏹️ Search timer stopped');
+        }
+
+        // Remove listener
+        if (this.matchListener) {
+            this.matchListener();
+            this.matchListener = null;
+            console.log('🔌 Match listener removed');
+        }
+
+        // Leave queue
+        console.log('🗑️ Leaving queue...');
+        await checkersMultiplayer.leaveQueue(this.uid);
+        console.log('✅ Left queue');
+
+        // Refund the dollar
+        console.log('💰 Refunding $1...');
+        await updateCheckersWalletBalance(
+            this.uid,
+            1.00,
+            'refund',
+            'Matchmaking cancelled - refund'
+        );
+        console.log('✅ Refund processed');
+
+        // Show refund message
+        const refundText = this.add.text(180, 450, '+$1 REFUNDED', {
+            fontSize: '18px',
+            color: '#00ff00',
+            fontStyle: 'bold',
+            stroke: '#000000',
+            strokeThickness: 2
+        }).setOrigin(0.5);
+
+        this.tweens.add({
+            targets: refundText,
+            y: 400,
+            alpha: 0,
+            duration: 1500,
+            onComplete: () => refundText.destroy()
+        });
+        console.log('✨ Refund message displayed');
+
+        // Fade out and go back to start scene
+        console.log('🎬 Fading out to StartScene...');
+        this.cameras.main.fadeOut(1000, 0, 0, 0);
+        this.time.delayedCall(1000, () => {
+            console.log('🏠 Returning to CheckersStartScene');
+            this.scene.start('CheckersStartScene', {
+                username: this.username,
+                uid: this.uid
+            });
+        });
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    }
+
+    private async handleTimeout() {
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('⏰ handleTimeout() called');
+        console.log(`   matchFound: ${this.matchFound}`);
+        console.log(`   cancelled: ${this.cancelled}`);
+        console.log(`   transitioning: ${this.transitioning}`);
+
+        if (this.matchFound || this.cancelled || this.transitioning) {
+            console.log('⚠️ Timeout ignored - match already found or cancelled');
+            return;
+        }
+
+        this.cancelled = true;
+        this.transitioning = true;
+        console.log('✅ Timeout accepted');
+
+        this.statusText.setText('No players found');
+        console.log('📝 Status updated to "No players found"');
+
+        // Refund the dollar
+        console.log('💰 Refunding $1 due to timeout...');
+        await updateCheckersWalletBalance(
+            this.uid,
+            1.00,
+            'refund',
+            'Matchmaking timeout - refund'
+        );
+        console.log('✅ Refund processed');
+
+        console.log('🗑️ Leaving queue...');
+        await checkersMultiplayer.leaveQueue(this.uid);
+        console.log('✅ Left queue');
+
+        console.log('🎬 Returning to StartScene in 2 seconds...');
+        this.time.delayedCall(2000, () => {
+            console.log('🏠 Returning to CheckersStartScene');
+            this.scene.start('CheckersStartScene', {
+                username: this.username,
+                uid: this.uid
+            });
+        });
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     }
 
     private createAnimatedPieces() {
-        // Create red piece
-        this.piece1 = this.add.text(140, 260, '🔴', {
-            fontSize: '48px'
-        });
+        this.piece1 = this.add.text(140, 260, '🔴', { fontSize: '48px' });
+        this.piece2 = this.add.text(200, 300, '⚫', { fontSize: '48px' });
 
-        // Create black piece
-        this.piece2 = this.add.text(200, 300, '⚫', {
-            fontSize: '48px'
-        });
-
-        // Animate pieces circling each other
         this.tweens.add({
             targets: this.piece1,
             x: 200,
@@ -237,289 +565,7 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
             repeat: -1,
             ease: 'Sine.easeInOut'
         });
-
-        // Rotation animation
-        this.tweens.add({
-            targets: [this.piece1, this.piece2],
-            angle: 360,
-            duration: 3000,
-            repeat: -1,
-            ease: 'Linear'
-        });
     }
-
-    // In CheckersMatchmakingScene.ts, update the joinQueue method:
-    private async cancelSearch() {
-        if (this.cancelled || this.matchFound) return;
-
-        this.cancelled = true;
-        console.log('🚪 Cancelling match search...');
-
-        this.statusText.setText('Cancelling...');
-
-        // Stop all timers
-        if (this.searchTimer) {
-            this.searchTimer.destroy();
-        }
-
-        if (this.matchCheckInterval) {
-            clearInterval(this.matchCheckInterval);
-            this.matchCheckInterval = 0;
-        }
-
-        if (this.matchListener) {
-            this.matchListener();
-            this.matchListener = null;
-        }
-
-        // REFUND: Add back the $1 game fee
-        await this.refundGameFee();
-
-        // Leave queue
-        await checkersMultiplayer.leaveQueue(this.uid);
-
-        // Show refund message
-        this.showRefundMessage();
-
-        // Fade out and go back to start scene
-        this.cameras.main.fadeOut(1000, 0, 0, 0);
-
-        this.time.delayedCall(1000, () => {
-            this.scene.start('CheckersStartScene', {
-                username: this.username,
-                uid: this.uid
-            });
-        });
-    }
-
-    private async refundGameFee(): Promise<boolean> {
-        try {
-            console.log('💰 Refunding $1 game fee for UID:', this.uid);
-
-            const success = await updateCheckersWalletBalance(
-                this.uid,
-                1.00,
-                'bonus',
-                'Matchmaking cancelled - fee refund'
-            );
-
-            if (success) {
-                console.log('✅ Game fee refunded successfully');
-                return true;
-            } else {
-                console.log('❌ Failed to refund game fee');
-                return false;
-            }
-
-        } catch (error) {
-            console.error('❌ Error refunding game fee:', error);
-            return false;
-        }
-    }
-
-    private showRefundMessage() {
-        // Create refund popup
-        const refundText = this.add.text(180, 450, '+$1 REFUNDED', {
-            fontSize: '18px',
-            color: '#00ff00',
-            fontStyle: 'bold',
-            stroke: '#000000',
-            strokeThickness: 2
-        }).setOrigin(0.5);
-
-        // Animate
-        this.tweens.add({
-            targets: refundText,
-            y: 400,
-            alpha: 0,
-            duration: 1500,
-            ease: 'Power2',
-            onComplete: () => refundText.destroy()
-        });
-    }
-
-
-    private async joinQueue() {
-        try {
-            console.log('🔍 Joining Checkers matchmaking queue...');
-            this.statusText.setText('Joining queue...');
-
-            // Clear any existing match notifications before joining
-            const matchRef = ref(db, `matches/${this.uid}`);
-            await remove(matchRef);
-
-            await checkersMultiplayer.joinQueue(
-                this.uid,
-                this.username,
-                this.displayName,
-                this.avatar
-            );
-
-            console.log('✅ Joined Checkers matchmaking queue');
-            this.statusText.setText('In queue - waiting for opponent...');
-
-            const count = await this.getQueueCount();
-            this.queueCountText.setText(`Players in queue: ${count}`);
-
-        } catch (error) {
-            console.error('❌ Failed to join queue:', error);
-            this.statusText.setText('Failed to join queue. Retrying...');
-
-            this.time.delayedCall(2000, () => {
-                this.joinQueue();
-            });
-        }
-    }
-
-    private async getQueueCount(): Promise<number> {
-        try {
-            const queueRef = ref(db, 'matchmaking/checkers');
-            const snapshot = await get(queueRef);
-            return snapshot.exists() ? Object.keys(snapshot.val()).length : 0;
-        } catch (error) {
-            return 0;
-        }
-    }
-
-    private startMatchChecking() {
-        console.log('🔍 Starting match check interval...');
-
-        this.matchCheckInterval = window.setInterval(async () => {
-            await this.checkForMatch();
-        }, 2000);
-    }
-
-    // In CheckersMatchmakingScene.ts, update the checkForMatch method
-
-    private async checkForMatch() {
-        if (this.matchFound || this.cancelled) return;
-
-        if (Date.now() - this.searchStartTime > this.maxSearchTime) {
-            this.statusText.setText('⚠️ Search timed out');
-            await this.refundGameFee();
-
-            const timeoutText = this.add.text(180, 400, 'No players found', {
-                fontSize: '16px',
-                color: '#ffaa00'
-            }).setOrigin(0.5);
-
-            this.time.delayedCall(2000, () => {
-                timeoutText.destroy();
-                this.scene.start('CheckersStartScene', {
-                    username: this.username,
-                    uid: this.uid
-                });
-            });
-            return;
-        }
-
-        try {
-            const lobbiesRef = ref(db, 'lobbies');
-            const snapshot = await get(lobbiesRef);
-
-            if (!snapshot.exists()) return;
-
-            const lobbies = snapshot.val();
-            const now = Date.now();
-
-            for (const [lobbyId, lobbyData] of Object.entries(lobbies)) {
-                const lobby = lobbyData as any;
-
-                // Skip old lobbies
-                if (now - lobby.createdAt > 120000) {
-                    continue;
-                }
-
-                // ONLY look for lobbies with status 'waiting'
-                // 'ready', 'playing', and 'finished' are NOT available for matchmaking
-                if (lobby.status !== 'waiting') {
-                    continue;
-                }
-
-                // Check if it's a checkers lobby and contains this player
-                if (lobby.gameId === 'checkers' &&
-                    lobby.playerIds &&
-                    lobby.playerIds.includes(this.uid)) {
-
-                    // Must have 2 players
-                    if (lobby.playerIds.length < 2) {
-                        await remove(ref(db, `lobbies/${lobbyId}`));
-                        continue;
-                    }
-
-                    // Make sure opponent is different player
-                    const opponentId = lobby.playerIds.find(id => id !== this.uid);
-                    if (opponentId === this.uid) {
-                        await remove(ref(db, `lobbies/${lobbyId}`));
-                        continue;
-                    }
-
-                    console.log('🎯 Match found! Lobby:', lobbyId);
-                    console.log('   Lobby status:', lobby.status); // Should be 'waiting'
-
-                    this.matchFound = true;
-
-                    // Update UI
-                    this.statusText.setText('Match found!');
-                    this.searchText.setText('Opponent located!');
-                    this.cameras.main.flash(500, 255, 255, 255);
-
-                    // Stop checking
-                    if (this.matchCheckInterval) {
-                        clearInterval(this.matchCheckInterval);
-                        this.matchCheckInterval = 0;
-                    }
-
-                    if (this.searchTimer) {
-                        this.searchTimer.destroy();
-                    }
-
-                    // Cancel button becomes "CONTINUE"
-                    this.cancelBtn.setText('✅ CONTINUE');
-                    this.cancelBtn.setStyle({ backgroundColor: '#4CAF50' });
-                    this.cancelBtn.off('pointerdown');
-                    this.cancelBtn.on('pointerdown', () => {
-                        this.goToLobby(lobbyId);
-                    });
-
-                    // Auto-continue after 2 seconds
-                    this.time.delayedCall(2000, () => {
-                        if (!this.cancelled && this.matchFound) {
-                            this.goToLobby(lobbyId);
-                        }
-                    });
-
-                    break;
-                }
-            }
-
-            const count = await this.getQueueCount();
-            this.queueCountText.setText(`Players in queue: ${count}`);
-
-        } catch (error) {
-            console.error('Error checking for match:', error);
-        }
-    }
-
-    private isTransitioning: boolean = false;
-
-    private goToLobby(lobbyId: string) {
-        if (this.isTransitioning) return;
-        this.isTransitioning = true;
-
-        console.log('🚀 Moving to Checkers lobby:', lobbyId);
-
-        this.cameras.main.fadeOut(500, 0, 0, 0);
-
-        this.cameras.main.once('camerafadeoutcomplete', () => {
-            this.scene.start('CheckersLobbyScene', {
-                username: this.username,
-                uid: this.uid,
-                lobbyId: lobbyId
-            });
-        });
-    }
-
 
     private addBackgroundPieces() {
         const pieces = ['♟️', '♞', '♝', '♜', '♛', '♚'];
@@ -549,49 +595,31 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
     }
 
     shutdown() {
-        console.log('🛑 Shutting down CheckersMatchmakingScene');
-
-        if (this.matchCheckInterval) {
-            clearInterval(this.matchCheckInterval);
-            this.matchCheckInterval = 0;
-        }
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('🛑 CheckersMatchmakingScene shutdown() called');
+        console.log(`   matchFound: ${this.matchFound}`);
+        console.log(`   transitioning: ${this.transitioning}`);
+        console.log(`   cancelled: ${this.cancelled}`);
 
         if (this.searchTimer) {
             this.searchTimer.destroy();
+            console.log('⏹️ Search timer destroyed');
         }
 
         if (this.matchListener) {
             this.matchListener();
             this.matchListener = null;
+            console.log('🔌 Match listener destroyed');
         }
 
-        // Only refund if we haven't found a match and didn't explicitly cancel
-        if (!this.matchFound && !this.cancelled) {
-            // Use setTimeout to avoid async issues during shutdown
-            setTimeout(() => {
-                this.refundGameFee().then(() => {
-                    // Go to start scene
-                    this.scene.start('CheckersStartScene', {
-                        username: this.username,
-                        uid: this.uid
-                    });
-                }).catch(err => {
-                    console.error('Error refunding during shutdown:', err);
-                    // Still go to start scene even if refund fails
-                    this.scene.start('CheckersStartScene', {
-                        username: this.username,
-                        uid: this.uid
-                    });
-                });
-            }, 100);
-
-            checkersMultiplayer.leaveQueue(this.uid).catch(err => {
-                console.error('Error leaving queue during shutdown:', err);
-            });
+        // Only cleanup if not transitioning to lobby
+        if (!this.matchFound && !this.transitioning) {
+            console.log('🗑️ Cleanup: leaving queue and setting offline');
+            checkersMultiplayer.leaveQueue(this.uid);
+            checkersMultiplayer.setPlayerOnline(this.uid, false);
+        } else {
+            console.log('✅ Cleanup skipped - match found or transitioning');
         }
-
-        checkersMultiplayer.setPlayerOnline(this.uid, false).catch(err => {
-            console.error('Error setting offline status:', err);
-        });
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     }
 }

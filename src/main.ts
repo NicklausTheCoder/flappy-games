@@ -3,7 +3,7 @@ import Phaser from 'phaser';
 
 // Import CookieScene (SHARED)
 import { CookieScene } from './scenes/CookieScene';
-
+import { checkersMultiplayer } from './firebase/checkersMultiplayer';
 // Import Flappy Bird scenes
 import { FlappyBirdLoaderScene } from './scenes/flappy-bird/FlappyBirdLoaderScene';
 import { FlappyBirdStartScene } from './scenes/flappy-bird/FlappyBirdStartScene';
@@ -110,6 +110,7 @@ import { CheckersTestLobbyScene } from './scenes/CheckersTestLobbyScene';
 
     console.log('📦 Game config:', window.gameConfig);
 })();
+checkersMultiplayer.startMatchmakingService();
 
 // Tell TypeScript about our window globals
 declare global {

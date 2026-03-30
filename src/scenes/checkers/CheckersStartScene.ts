@@ -319,7 +319,7 @@ export class CheckersStartScene extends Phaser.Scene {
     });
   }
 
-  private createMenuButtons() {
+ private createMenuButtons() {
     if (!this.userData) return;
 
     const buttonWidth = 160;
@@ -344,6 +344,12 @@ export class CheckersStartScene extends Phaser.Scene {
         text: '⚡ TEST SKILL',
         color: '#FF9800', // Orange
         scene: 'CheckersTestSkillScene'
+      },
+      {
+        text: '🎮 BACK TO GAMES',
+        color: '#FF5722', // Red-Orange
+        isExternal: true,
+        url: 'https://wintapgames.com/games'
       }
     ];
 
@@ -388,7 +394,13 @@ export class CheckersStartScene extends Phaser.Scene {
         bg.strokeRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
       });
 
-      if (btn.text === '🎮 FIND MATCH') {
+      // Handle button clicks
+      if (btn.isExternal && btn.url) {
+        // External link handler
+        button.on('pointerdown', () => {
+          window.location.href = btn.url!;
+        });
+      } else if (btn.text === '🎮 FIND MATCH') {
         button.on('pointerdown', async () => {
           if (this.userData!.balance < 1) {
             this.showInsufficientFunds();
@@ -414,7 +426,11 @@ export class CheckersStartScene extends Phaser.Scene {
                   displayName: this.displayName
                 });
 
-                this.scene.start('CheckersMatchmakingScene', { username: this.username, userData: this.userData, uid: this.uid });
+                this.scene.start('CheckersMatchmakingScene', { 
+                  username: this.username, 
+                  userData: this.userData, 
+                  uid: this.uid 
+                });
               }
             });
           } else {
@@ -423,14 +439,17 @@ export class CheckersStartScene extends Phaser.Scene {
         });
       } else {
         button.on('pointerdown', () => {
-          this.scene.start(btn.scene, { username: this.username, userData: this.userData, uid: this.uid });
+          this.scene.start(btn.scene, { 
+            username: this.username, 
+            userData: this.userData, 
+            uid: this.uid 
+          });
         });
       }
 
       this.menuButtons.push(button);
     });
-  }
-
+}
   private async deductGameFee(): Promise<boolean> {
     if (!this.userData || !this.uid) return false;
 

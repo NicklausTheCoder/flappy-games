@@ -9,10 +9,19 @@ import {
   FlappyBirdLeaderboardEntry
 } from '../../firebase/flappyBirdSimple';
 
+
+interface MenuButton {
+  text: string;
+  color: string;
+  scene?: string;
+  isExternal?: boolean;
+  url?: string;
+}
 export class FlappyBirdStartScene extends Phaser.Scene {
   // Receive username from LoaderScene
   private username: string = '';
   private uid: string = '';
+
 
   // Then we fetch ALL this data ourselves
   private userData: FlappyBirdUserData | null = null;
@@ -320,16 +329,22 @@ export class FlappyBirdStartScene extends Phaser.Scene {
     const startX = 180;
     const startY = 280;
 
-    const buttons = [
+    const buttons: MenuButton[] = [
       { text: '▶ PLAY GAME', color: '#4CAF50', scene: 'FlappyBirdGameScene' },
       { text: '🏆 LEADERBOARD', color: '#2196F3', scene: 'FlappyBirdLeaderboardScene' },
       { text: '👤 PROFILE', color: '#9C27B0', scene: 'FlappyBirdProfileScene' },
       { text: '📊 MY SCORES', color: '#FF9800', scene: 'FlappyBirdScoresScene' },
       {
-    text: '🏆 TOURNAMENT',
-    color: '#9C27B0', // Purple
-    scene: 'PrizeTournamentScene'
-}
+        text: '🏆 TOURNAMENT',
+        color: '#9C27B0',
+        scene: 'PrizeTournamentScene'
+      },
+      {
+        text: '🎮 BACK TO GAMES',
+        color: '#FF5722',
+        isExternal: true,
+        url: 'https://wintapgames.com/games'
+      }
     ];
 
     buttons.forEach((btn, index) => {
@@ -373,49 +388,57 @@ export class FlappyBirdStartScene extends Phaser.Scene {
         bg.strokeRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
       });
 
-      if (btn.text === '▶ PLAY GAME') {
-        button.on('pointerdown', async () => {
+      // *** ADD THE CLICK HANDLER HERE ***
+      button.on('pointerdown', () => {
+        // Check if it's an external link
+        if (btn.isExternal && btn.url) {
+          // Redirect to external URL
+          window.location.href = btn.url;
+          return;
+        }
+
+        // Otherwise handle as internal game scene
+        if (btn.text === '▶ PLAY GAME') {
           if (this.balance < 1) {
             this.showInsufficientFunds();
             return;
           }
 
-          const success = await this.deductGameFee();
-
-          if (success) {
-            this.balance -= 1;
-            if (this.userData) {
-              this.userData.balance = this.balance;
-            }
-            this.balanceText.setText(`$${this.balance.toFixed(2)}`);
-
-            this.tweens.add({
-              targets: this.balanceText,
-              scale: 1.3,
-              color: '#ff0000',
-              duration: 200,
-              yoyo: true,
-              onComplete: () => {
-                this.scene.start(btn.scene, {
-                  username: this.username,
-                  uid: this.uid,
-                  userData: this.userData
-                });
+          this.deductGameFee().then(success => {
+            if (success) {
+              this.balance -= 1;
+              if (this.userData) {
+                this.userData.balance = this.balance;
               }
-            });
-          } else {
-            this.showError('Failed to process payment');
-          }
-        });
-      } else {
-        button.on('pointerdown', () => {
+              this.balanceText.setText(`$${this.balance.toFixed(2)}`);
+
+              this.tweens.add({
+                targets: this.balanceText,
+                scale: 1.3,
+                color: '#ff0000',
+                duration: 200,
+                yoyo: true,
+                onComplete: () => {
+                  this.scene.start(btn.scene!, {
+                    username: this.username,
+                    uid: this.uid,
+                    userData: this.userData
+                  });
+                }
+              });
+            } else {
+              this.showError('Failed to process payment');
+            }
+          });
+        } else if (btn.scene) {
+          // For other internal scenes
           this.scene.start(btn.scene, {
             username: this.username,
             uid: this.uid,
             userData: this.userData
           });
-        });
-      }
+        }
+      });
 
       this.menuButtons.push(button);
     });
