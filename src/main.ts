@@ -36,10 +36,10 @@ import { BallCrushLeaderboardScene } from './scenes/ball-crush/BallCrushLeaderbo
 import { URLEncryption } from './utils/encryption';
 import { BallCrushLobbyScene } from './scenes/ball-crush/BallCrushLobbyScene';
 import { BallCrushMatchmakingScene } from './scenes/ball-crush/BallCrushMatchmakingScene';
-
+import { ballCrushMultiplayer } from './firebase/ballCrushMultiplayer';
 
 import { CheckersStartScene } from './scenes/checkers/CheckersStartScene';
-import {  CheckersMultiplayerGameScene } from './scenes/checkers/CheckersMultiplayerGameScene';
+import { CheckersMultiplayerGameScene } from './scenes/checkers/CheckersMultiplayerGameScene';
 import { CheckersLoaderScene } from './scenes/checkers/CheckersLoaderScene';
 import { PrizeTournamentScene } from './scenes/flappy-bird/PrizeTournamentScene';
 import { CheckersGameOverScene } from './scenes/checkers/CheckersGameOverScene';
@@ -110,7 +110,7 @@ import { CheckersTestLobbyScene } from './scenes/CheckersTestLobbyScene';
 
     console.log('📦 Game config:', window.gameConfig);
 })();
-checkersMultiplayer.startMatchmakingService();
+
 
 // Tell TypeScript about our window globals
 declare global {
@@ -169,6 +169,8 @@ const getGameScenes = () => {
         //     break;
 
         case 'ball-crush':
+            ballCrushMultiplayer.startMatchmakingService();
+
             scenes.push(
                 BallCrushLoaderScene,
                 BallCrushStartScene,
@@ -183,12 +185,14 @@ const getGameScenes = () => {
             break;
 
         case 'checkers':
+
+        checkersMultiplayer.startMatchmakingService();
             scenes.push(
                 CheckersLoaderScene,  // Add this first
                 CheckersStartScene,
                 CheckersMatchmakingScene,  // Add this
                 CheckersLobbyScene,        // Add this
-               CheckersMultiplayerGameScene, // Rename this to CheckersMultiplayerGameScene
+                CheckersMultiplayerGameScene, // Rename this to CheckersMultiplayerGameScene
                 CheckersProfileScene,  // Add this
                 CheckersGameOverScene,
                 CheckersLeaderboardScene,  // Add this

@@ -1,63 +1,76 @@
 ﻿// src/scenes/ball-crush/BallCrushGameScene.ts
 import Phaser from 'phaser';
-import { 
-  updateBallCrushProfileStats, 
+import { io, Socket } from 'socket.io-client';
+import {
+  updateBallCrushProfileStats,
   addBallCrushWinnings,
-  getBallCrushBalance,
-  updateBallCrushWalletBalance 
 } from '../../firebase/ballCrushSimple';
+
+const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001';
+
+interface GameState {
+  ball:    { x: number; y: number };
+  paddles: { bottom: number; top: number };
+  health:  { bottom: number; top: number };
+}
 
 export class BallCrushGameScene extends Phaser.Scene {
   private username: string = '';
-  private uid: string = ''; // Add this to store user ID
+  private uid: string = '';
+  private roomId: string = '';
+  private myRole: 'bottom' | 'top' = 'bottom';
 
-  // Game objects
-  private player!: Phaser.GameObjects.Image;
-  private ball!: Phaser.GameObjects.Image;
-  private opponent!: Phaser.GameObjects.Image;
-  
-  // UI Elements
-  private scoreText!: Phaser.GameObjects.Text;
-  private score: number = 0;
+  private socket!: Socket;
+  private lastSentPaddleX: number = 0;
 
-  // Game state
-  private gameActive: boolean = true;
-  private ballSpeed: number = 200;
-  private ballDirection: Phaser.Math.Vector2;
-  private playerHealth: number = 5;
-  private opponentHealth: number = 5;
-  private playerHealthBars: Phaser.GameObjects.Image[] = [];
+  private myPaddle!:       Phaser.GameObjects.Image;
+  private opponentPaddle!: Phaser.GameObjects.Image;
+  private ball!:           Phaser.GameObjects.Image;
+
+  // Visual effects for hits
+  private hitEffect!: Phaser.GameObjects.Graphics;
+  private hitEffectTimer: number = 0;
+
+  private scoreText!:         Phaser.GameObjects.Text;
+  private myHealthBars:       Phaser.GameObjects.Image[] = [];
   private opponentHealthBars: Phaser.GameObjects.Image[] = [];
-  private opponentSpeed: number = 3;
-  private speedMultiplier: number = 1.0;
-  private lastSpeedIncrease: number = 0;
-  private speedIncreaseInterval: number = 30000;
-  
-  // Game tracking
-  private gameStartTime: number = 0;
-  private currentScore: number = 0;
-  
-  // Controls
+  private waitingText?:       Phaser.GameObjects.Text;
+
+  private gameActive:    boolean = false;
+  private currentScore:  number  = 0;
+  private gameStartTime: number  = 0;
+
+  // Smooth interpolation for ball
+  private targetBallX: number = 180;
+  private targetBallY: number = 320;
+  private lastBallUpdate: number = 0;
+
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private moveSpeed: number = 5;
+  private moveSpeed: number = 6;
+
+  private readonly BOTTOM_Y = 550;
+  private readonly TOP_Y    = 50;
+  private readonly MIN_PADDLE_X = 35;
+  private readonly MAX_PADDLE_X = 325;
+  private readonly GAME_HEIGHT = 640;
 
   constructor() {
     super({ key: 'BallCrushGameScene' });
-    this.ballDirection = new Phaser.Math.Vector2(1, 1).normalize();
   }
 
-  init(data: { username: string; uid: string }) {
+  init(data: { username: string; uid: string; lobbyId: string; role: 'bottom' | 'top' }) {
     this.username = data.username || 'Player';
-    this.uid = data.uid || '';
-    console.log('⚽ BallCrushGameScene started for:', this.username, 'UID:', this.uid);
+    this.uid      = data.uid || '';
+    this.roomId   = data.lobbyId;
+    this.myRole   = data.role || 'bottom';
+    console.log(`⚽ Role: ${this.myRole}`);
   }
 
   create() {
-    // Track game start time
     this.gameStartTime = Date.now();
-    this.currentScore = 0;
+    this.lastSentPaddleX = 180;
+    this.lastBallUpdate = Date.now();
 
-    // Background
     if (this.textures.exists('ball-background')) {
       const bg = this.add.image(180, 320, 'ball-background');
       bg.setDisplaySize(360, 640);
@@ -66,203 +79,211 @@ export class BallCrushGameScene extends Phaser.Scene {
       this.cameras.main.setBackgroundColor('#1a3a1a');
     }
 
-    // Add some decorative elements
     this.addBackgroundEffects();
-
-    // Create player (as a regular image)
-    this.createPlayer();
-
-    // Create ball (as a regular image)
-    this.createBall();
-
-    // Create opponent
-    this.createOpponent();
-    
-    // Create UI
+    this.createGameObjects();
     this.createUI();
-
-    // Set up input
     this.setupInput();
-
-    // Start the game
-    this.gameActive = true;
-
-    // Set initial random direction
-    const angle = Phaser.Math.Between(0, 3) * 90 + 45;
-    const rad = Phaser.Math.DegToRad(angle);
-    this.ballDirection.set(Math.cos(rad), Math.sin(rad));
-
-    // Start speed increase timer
-    this.lastSpeedIncrease = this.time.now;
+    this.connectSocket();
   }
 
-  private createPlayer() {
-    this.player = this.add.image(180, 550, 'player');
-    this.player.setScale(0.15);
-
-    this.add.text(180, 590, 'YOU', {
-      fontSize: '14px',
-      color: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 2
-    }).setOrigin(0.5);
-  }
-
-  private createBall() {
-    if (!this.textures.exists('ball')) {
-      console.error('❌ Ball texture not found');
-      return;
+  private flipY(y: number): number {
+    if (this.myRole === 'top') {
+      return this.GAME_HEIGHT - y;
     }
-
-    this.ball = this.add.image(180, 300, 'ball');
-    this.ball.setScale(0.15);
+    return y;
   }
 
-  private hitOpponent() {
+  private showHitEffect(x: number, y: number) {
+    // Create a quick flash at hit position
+    const hitCircle = this.add.circle(x, y, 15, 0xffff00, 0.8);
     this.tweens.add({
-      targets: this.opponent,
-      scale: 0.2,
-      duration: 100,
-      yoyo: true
+      targets: hitCircle,
+      scale: 1.5,
+      alpha: 0,
+      duration: 150,
+      onComplete: () => hitCircle.destroy()
+    });
+    
+    // Also shake the paddle slightly
+    const paddle = Math.abs(y - this.BOTTOM_Y) < 50 ? this.myPaddle : this.opponentPaddle;
+    if (paddle) {
+      this.tweens.add({
+        targets: paddle,
+        x: paddle.x + (Math.random() - 0.5) * 8,
+        duration: 50,
+        yoyo: true,
+        repeat: 2
+      });
+    }
+  }
+
+  private connectSocket() {
+    this.socket = io(SERVER_URL, { transports: ['websocket'] });
+
+    this.socket.on('connect', () => {
+      console.log('🔌 Socket connected:', this.socket.id);
+      this.socket.emit('joinRoom', {
+        roomId:   this.roomId,
+        username: this.username,
+        uid:      this.uid,
+        role:     this.myRole
+      });
     });
 
-    const hitPosition = (this.ball.x - this.opponent.x) / 30;
-    const clampedHit = Phaser.Math.Clamp(hitPosition, -0.9, 0.9);
-    const randomFactor = Phaser.Math.FloatBetween(-0.3, 0.3);
+    this.socket.on('roomJoined', ({ role }: { role: 'bottom' | 'top' }) => {
+      console.log(`✅ Room joined as ${role}`);
+      if (this.waitingText) {
+        this.waitingText.setText('Waiting for opponent...');
+      }
+    });
 
-    this.ballDirection.x = clampedHit * 1.2 + randomFactor;
-    this.ballDirection.y = 0.7;
-    this.ballDirection.x = Phaser.Math.Clamp(this.ballDirection.x, -0.9, 0.9);
-    this.ballDirection.normalize();
+    this.socket.on('gameStart', ({ players }: { players: { bottom: string; top: string } }) => {
+      if (this.waitingText) {
+        this.waitingText.destroy();
+        this.waitingText = undefined;
+      }
 
-    if (this.ballDirection.y < 0) {
-      this.ballDirection.y = Math.abs(this.ballDirection.y);
-    }
+      this.gameActive = true;
 
-    this.ballSpeed = Math.min(this.ballSpeed + 3, 400);
+      const opponentName = this.myRole === 'bottom' ? players.top : players.bottom;
+      const label = this.children.getByName('opponentLabel') as Phaser.GameObjects.Text;
+      if (label) label.setText(opponentName);
+
+      this.opponentPaddle.setVisible(true);
+      this.opponentPaddle.setAlpha(1);
+
+      const vs = this.add.text(180, 300, `VS ${opponentName}`, {
+        fontSize: '18px', color: '#ffff00', stroke: '#000', strokeThickness: 3
+      }).setOrigin(0.5);
+      this.time.delayedCall(2000, () => vs.destroy());
+
+      console.log('🎮 Game started!');
+    });
+
+    this.socket.on('gameState', (state: GameState) => {
+      if (!this.gameActive) return;
+
+      // Set target position for smooth interpolation
+      this.targetBallX = state.ball.x;
+      this.targetBallY = this.flipY(state.ball.y);
+      this.lastBallUpdate = Date.now();
+
+      // Update opponent paddle
+      if (this.opponentPaddle) {
+        const opponentPaddleX = this.myRole === 'bottom' ? state.paddles.top : state.paddles.bottom;
+        // Smooth opponent paddle movement
+        this.opponentPaddle.x = Phaser.Math.Linear(this.opponentPaddle.x, opponentPaddleX, 0.3);
+      }
+    });
+
+    this.socket.on('ballReset', ({ ball }: { ball: { x: number; y: number } }) => {
+      if (this.ball) {
+        this.targetBallX = ball.x;
+        this.targetBallY = this.flipY(ball.y);
+        // Instantly set position on reset
+        this.ball.x = this.targetBallX;
+        this.ball.y = this.targetBallY;
+      }
+    });
+
+    this.socket.on('paddleHit', ({ role, score }: { role: 'bottom' | 'top'; score: number }) => {
+      if (role === this.myRole) {
+        this.currentScore = score;
+        this.scoreText?.setText(`Score: ${score}`);
+        this.tweens.add({ targets: this.myPaddle, scaleX: 0.18, scaleY: 0.18, duration: 100, yoyo: true });
+        
+        // Show hit effect at my paddle
+        this.showHitEffect(this.myPaddle.x, this.myPaddle.y);
+      } else {
+        this.tweens.add({ targets: this.opponentPaddle, scaleX: 0.18, scaleY: 0.18, duration: 100, yoyo: true });
+        
+        // Show hit effect at opponent paddle
+        this.showHitEffect(this.opponentPaddle.x, this.opponentPaddle.y);
+      }
+      
+      // Small camera shake on hit
+      this.cameras.main.shake(50, 0.003);
+    });
+
+    this.socket.on('point', ({ scorer, health }: { scorer: 'bottom' | 'top'; health: { bottom: number; top: number } }) => {
+      this.updateHealthBars(health);
+
+      if (scorer === this.myRole) {
+        this.cameras.main.flash(300, 0, 255, 0, 0.5);
+      } else {
+        this.cameras.main.flash(300, 255, 0, 0, 0.5);
+        // Stronger camera shake when scored on
+        this.cameras.main.shake(200, 0.008);
+      }
+    });
+
+    this.socket.on('speedBump', ({ multiplier }: { multiplier: number }) => {
+      this.cameras.main.flash(500, 255, 255, 255, 0.3);
+      const t = this.add.text(180, 200, `SPEED x${multiplier.toFixed(1)}!`, {
+        fontSize: '28px', color: '#ffffff', fontStyle: 'bold',
+        stroke: '#ff0000', strokeThickness: 4
+      }).setOrigin(0.5);
+      this.tweens.add({ targets: t, y: 150, alpha: 0, duration: 2000, ease: 'Power2', onComplete: () => t.destroy() });
+    });
+
+    this.socket.on('gameOver', ({ winnerRole, winnerUsername }: { winnerRole: 'bottom' | 'top'; winnerUsername: string }) => {
+      const won = winnerRole === this.myRole;
+      this.handleGameOver(won, winnerUsername);
+    });
+
+    this.socket.on('error', ({ message }: { message: string }) => {
+      console.error('Socket error:', message);
+      this.add.text(180, 320, `Error: ${message}`, {
+        fontSize: '18px', color: '#ff4444', stroke: '#000', strokeThickness: 3
+      }).setOrigin(0.5);
+    });
+
+    this.socket.on('disconnect', () => {
+      if (this.gameActive) {
+        this.gameActive = false;
+        this.add.text(180, 320, 'Opponent disconnected!', {
+          fontSize: '20px', color: '#ff4444', stroke: '#000', strokeThickness: 3
+        }).setOrigin(0.5);
+        this.time.delayedCall(3000, () => this.returnToMenu());
+      }
+    });
   }
 
-  private checkPaddleCollision() {
-    if (!this.gameActive || !this.ball || !this.player || !this.opponent) return;
+  update() {
+    if (!this.gameActive || !this.myPaddle) return;
 
-    const ballLeft = this.ball.x - 12;
-    const ballRight = this.ball.x + 12;
-    const ballTop = this.ball.y - 12;
-    const ballBottom = this.ball.y + 12;
+    // Smooth ball interpolation
+    if (this.ball) {
+      const now = Date.now();
+      const timeSinceUpdate = Math.min(100, now - this.lastBallUpdate);
+      const lerpFactor = Math.min(1, timeSinceUpdate / 50); // Interpolate over 50ms
+      
+      this.ball.x = Phaser.Math.Linear(this.ball.x, this.targetBallX, lerpFactor);
+      this.ball.y = Phaser.Math.Linear(this.ball.y, this.targetBallY, lerpFactor);
+      this.ball.rotation += 0.05;
+    }
 
-    // Player paddle collision
-    if (this.ballDirection.y > 0) {
-      const paddleLeft = this.player.x - 35;
-      const paddleRight = this.player.x + 35;
-      const paddleTop = this.player.y - 10;
-      const paddleBottom = this.player.y + 10;
+    // Paddle movement
+    let newX = this.myPaddle.x;
 
-      if (ballLeft < paddleRight &&
-        ballRight > paddleLeft &&
-        ballBottom >= paddleTop &&
-        ballTop <= paddleBottom &&
-        this.ball.y < this.player.y) {
-        
-        this.hitPlayer();
-        this.ball.y = this.player.y - 22;
+    if (this.cursors) {
+      if (this.cursors.left?.isDown) {
+        newX = Math.max(this.MIN_PADDLE_X, newX - this.moveSpeed);
+      }
+      if (this.cursors.right?.isDown) {
+        newX = Math.min(this.MAX_PADDLE_X, newX + this.moveSpeed);
       }
     }
 
-    // Opponent paddle collision
-    if (this.ballDirection.y < 0) {
-      const paddleLeft = this.opponent.x - 35;
-      const paddleRight = this.opponent.x + 35;
-      const paddleTop = this.opponent.y - 10;
-      const paddleBottom = this.opponent.y + 10;
-
-      if (ballLeft < paddleRight &&
-        ballRight > paddleLeft &&
-        ballBottom >= paddleTop &&
-        ballTop <= paddleBottom &&
-        this.ball.y > this.opponent.y) {
-        
-        this.hitOpponent();
-        this.ball.y = this.opponent.y + 22;
-      }
-    }
-  }
-
-  private hitPlayer() {
-    // Visual feedback
-    this.tweens.add({
-      targets: this.player,
-      scale: 0.2,
-      duration: 100,
-      yoyo: true
-    });
-
-    // Increase score on hit
-    this.score++;
-    this.currentScore = this.score;
-    this.scoreText.setText(`Score: ${this.score}`);
-
-    const hitPosition = (this.ball.x - this.player.x) / 30;
-    const clampedHit = Phaser.Math.Clamp(hitPosition, -0.9, 0.9);
-    const randomFactor = Phaser.Math.FloatBetween(-0.3, 0.3);
-
-    this.ballDirection.x = clampedHit * 1.2 + randomFactor;
-    this.ballDirection.y = -0.7;
-    this.ballDirection.x = Phaser.Math.Clamp(this.ballDirection.x, -0.9, 0.9);
-    this.ballDirection.normalize();
-
-    if (this.ballDirection.y > 0) {
-      this.ballDirection.y = -Math.abs(this.ballDirection.y);
+    if (newX !== this.myPaddle.x) {
+      this.myPaddle.x = newX;
     }
 
-    this.ballSpeed = Math.min(this.ballSpeed + 5, 400);
-  }
-
-  private createUI() {
-    // Player health bars (bottom)
-    const playerStartX = 80;
-    for (let i = 0; i < this.playerHealth; i++) {
-      const healthBar = this.add.image(playerStartX + (i * 40), 620, 'ball');
-      healthBar.setScale(0.1);
-      healthBar.setTint(0x00ff00);
-      this.playerHealthBars.push(healthBar);
+    // Send paddle position to server (throttled)
+    if (Math.abs(this.myPaddle.x - this.lastSentPaddleX) > 2) {
+      this.socket?.emit('paddleMove', { x: this.myPaddle.x });
+      this.lastSentPaddleX = this.myPaddle.x;
     }
-
-    // Opponent health bars (top) - FIXED: Changed from green to red
-    const opponentStartX = 80;
-    for (let i = 0; i < this.opponentHealth; i++) {
-      const healthBar = this.add.image(opponentStartX + (i * 40), 20, 'ball');
-      healthBar.setScale(0.1);
-      healthBar.setTint(0xff0000); // Red for opponent
-      this.opponentHealthBars.push(healthBar);
-    }
-
-    // Score display
-    this.scoreText = this.add.text(180, 300, 'Score: 0', {
-      fontSize: '24px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
-    }).setOrigin(0.5);
-
-    // Instructions
-    this.add.text(180, 560, 'Move with ← → arrows or touch', {
-      fontSize: '12px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-  }
-
-  private createOpponent() {
-    this.opponent = this.add.image(180, 50, 'player');
-    this.opponent.setScale(0.15);
-    this.opponent.setFlipY(true);
-
-    this.add.text(180, 30, 'CPU', {
-      fontSize: '14px',
-      color: '#ff4444',
-      stroke: '#000000',
-      strokeThickness: 2
-    }).setOrigin(0.5);
   }
 
   private setupInput() {
@@ -271,287 +292,156 @@ export class BallCrushGameScene extends Phaser.Scene {
     }
 
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (pointer.isDown && this.player) {
-        this.movePlayerWithPointer(pointer);
+      if (pointer.isDown && this.myPaddle && this.gameActive) {
+        this.myPaddle.x = Phaser.Math.Clamp(pointer.x, this.MIN_PADDLE_X, this.MAX_PADDLE_X);
       }
     });
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.player) {
-        this.movePlayerWithPointer(pointer);
+      if (this.myPaddle && this.gameActive) {
+        this.myPaddle.x = Phaser.Math.Clamp(pointer.x, this.MIN_PADDLE_X, this.MAX_PADDLE_X);
       }
     });
   }
 
-  private movePlayerWithPointer(pointer: Phaser.Input.Pointer) {
-    if (!this.player) return;
-    let newX = Phaser.Math.Clamp(pointer.x, 30, 330);
-    this.player.x = newX;
+  private createGameObjects() {
+    this.myPaddle = this.add.image(180, this.BOTTOM_Y, 'player');
+    this.myPaddle.setScale(0.15);
+    this.myPaddle.setDepth(10);
+
+    this.add.text(180, 590, 'YOU', {
+      fontSize: '14px', color: '#ffffff', stroke: '#000000', strokeThickness: 2
+    }).setOrigin(0.5);
+
+    this.opponentPaddle = this.add.image(180, this.TOP_Y, 'player');
+    this.opponentPaddle.setScale(0.15);
+    this.opponentPaddle.setFlipY(true);
+    this.opponentPaddle.setDepth(10);
+    this.opponentPaddle.setVisible(false);
+    this.opponentPaddle.setAlpha(0);
+
+    this.add.text(180, 30, 'OPPONENT', {
+      fontSize: '14px', color: '#ff4444', stroke: '#000000', strokeThickness: 2
+    }).setOrigin(0.5).setName('opponentLabel');
+
+    this.ball = this.add.image(180, 320, 'ball');
+    this.ball.setScale(0.15);
+    this.ball.setDepth(5);
   }
 
-  update(time: number, delta: number) {
-    if (!this.gameActive || !this.ball || !this.player || !this.opponent) return;
-
-    // Check for speed increase every 30 seconds
-    if (time - this.lastSpeedIncrease >= this.speedIncreaseInterval) {
-      this.increaseSpeed();
-      this.lastSpeedIncrease = time;
+  private createUI() {
+    for (let i = 0; i < 5; i++) {
+      const bar = this.add.image(80 + i * 40, 620, 'ball');
+      bar.setScale(0.1);
+      bar.setTint(0x00ff00);
+      this.myHealthBars.push(bar);
     }
 
-    const deltaSeconds = delta / 1000;
-
-    // Move ball in current direction
-    const moveX = this.ballDirection.x * this.ballSpeed * deltaSeconds;
-    const moveY = this.ballDirection.y * this.ballSpeed * deltaSeconds;
-
-    // Check for wall collisions
-    if (this.ball.x + moveX <= 12 || this.ball.x + moveX >= 348) {
-      this.ballDirection.x *= -1;
+    for (let i = 0; i < 5; i++) {
+      const bar = this.add.image(80 + i * 40, 20, 'ball');
+      bar.setScale(0.1);
+      bar.setTint(0xff0000);
+      this.opponentHealthBars.push(bar);
     }
 
-    // Check if ball missed player paddle (bottom)
-    if (this.ball.y + moveY >= 628) {
-      this.resetBall('opponent');
-      return;
-    }
+    this.scoreText = this.add.text(180, 300, 'Score: 0', {
+      fontSize: '24px', color: '#ffffff', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 4
+    }).setOrigin(0.5);
 
-    // Check if ball missed opponent paddle (top)
-    if (this.ball.y + moveY <= 12) {
-      this.resetBall('player');
-      return;
-    }
+    this.add.text(180, 560, 'Move with ← → arrows or drag', {
+      fontSize: '12px', color: '#ffffff'
+    }).setOrigin(0.5);
 
-    // Check for paddle collision
-    this.checkPaddleCollision();
-
-    // Opponent AI movement
-    if (this.opponent && this.ball) {
-      const targetX = this.ball.x;
-      const currentX = this.opponent.x;
-
-      if (Math.abs(targetX - currentX) > this.opponentSpeed) {
-        if (targetX > currentX) {
-          this.opponent.x = Math.min(330, this.opponent.x + this.opponentSpeed);
-        } else {
-          this.opponent.x = Math.max(30, this.opponent.x - this.opponentSpeed);
-        }
-      }
-    }
-
-    // Apply movement
-    this.ball.x += moveX;
-    this.ball.y += moveY;
-
-    // Keyboard controls for player
-    if (this.cursors) {
-      if (this.cursors.left?.isDown) {
-        this.player.x = Math.max(30, this.player.x - this.moveSpeed);
-      }
-      if (this.cursors.right?.isDown) {
-        this.player.x = Math.min(330, this.player.x + this.moveSpeed);
-      }
-    }
-
-    // Add rotation for visual effect
-    this.ball.rotation += 0.02;
+    this.waitingText = this.add.text(180, 320, 'Connecting to server...', {
+      fontSize: '20px', color: '#ffffff', stroke: '#000', strokeThickness: 3
+    }).setOrigin(0.5);
   }
 
-  private async gameOver(message: string, won: boolean) {
+  private updateHealthBars(health: { bottom: number; top: number }) {
+    const myHealth  = this.myRole === 'bottom' ? health.bottom : health.top;
+    const oppHealth = this.myRole === 'bottom' ? health.top    : health.bottom;
+
+    while (this.myHealthBars.length > myHealth) {
+      this.myHealthBars.pop()?.destroy();
+    }
+    while (this.myHealthBars.length < myHealth) {
+      const bar = this.add.image(80 + this.myHealthBars.length * 40, 620, 'ball');
+      bar.setScale(0.1);
+      bar.setTint(0x00ff00);
+      this.myHealthBars.push(bar);
+    }
+
+    while (this.opponentHealthBars.length > oppHealth) {
+      this.opponentHealthBars.pop()?.destroy();
+    }
+    while (this.opponentHealthBars.length < oppHealth) {
+      const bar = this.add.image(80 + this.opponentHealthBars.length * 40, 20, 'ball');
+      bar.setScale(0.1);
+      bar.setTint(0xff0000);
+      this.opponentHealthBars.push(bar);
+    }
+  }
+
+  private async handleGameOver(won: boolean, winnerUsername: string) {
     this.gameActive = false;
-
-    // Calculate game duration
     const duration = Math.floor((Date.now() - this.gameStartTime) / 1000);
-    
-    console.log(`🏁 Game Over - Won: ${won}, Score: ${this.currentScore}, Duration: ${duration}s`);
 
-    // Update profile stats in Firebase
     if (this.uid) {
       try {
-        await updateBallCrushProfileStats(
-          this.uid,
-          this.currentScore,
-          won,
-          duration
-        );
-        console.log('✅ Profile stats updated');
-
-        // If player won, add winnings
+        await updateBallCrushProfileStats(this.uid, this.currentScore, won, duration);
         if (won) {
-          await addBallCrushWinnings(
-            this.uid,
-            0.50,
-            `Ball Crush victory - Score: ${this.currentScore}`
-          );
-          console.log('💰 Added $0.50 to winnings');
-          
-          // Show winnings popup
+          await addBallCrushWinnings(this.uid, 0.50, `Ball Crush victory - Score: ${this.currentScore}`);
           this.showWinningsPopup();
         }
-
-        // Deduct game fee (already deducted at start, but ensure it's recorded)
-        // This is just for record keeping if needed
-        console.log('💳 Game completed');
-
-      } catch (error) {
-        console.error('❌ Error updating game stats:', error);
+      } catch (err) {
+        console.error('Firebase error:', err);
       }
     }
 
-    // Show game over text
     this.add.text(180, 280, 'GAME OVER', {
-      fontSize: '32px',
-      color: '#ff0000',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
+      fontSize: '32px', color: '#ff0000', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 4
     }).setOrigin(0.5);
 
-    this.add.text(180, 320, message, {
-      fontSize: '24px',
-      color: won ? '#ffff00' : '#ff6666',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 3
+    const resultMsg = won ? 'You Win! 🏆' : `${winnerUsername} Wins!`;
+    this.add.text(180, 320, resultMsg, {
+      fontSize: '24px', color: won ? '#ffff00' : '#ff6666', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 3
     }).setOrigin(0.5);
 
-    // Show score
     this.add.text(180, 360, `Score: ${this.currentScore}`, {
-      fontSize: '20px',
-      color: '#ffffff',
-      fontStyle: 'bold'
+      fontSize: '20px', color: '#ffffff', fontStyle: 'bold'
     }).setOrigin(0.5);
 
-    this.add.text(180, 400, 'Click to return to menu', {
-      fontSize: '16px',
-      color: '#ffffff'
+    this.add.text(180, 410, 'Tap to return to menu', {
+      fontSize: '16px', color: '#ffffff'
     }).setOrigin(0.5);
 
-    // Add restart handler
-    this.input.once('pointerdown', () => {
-      this.scene.start('BallCrushStartScene', { 
-        username: this.username,
-        uid: this.uid 
-      });
-    });
+    this.input.once('pointerdown', () => this.returnToMenu());
+  }
+
+  private returnToMenu() {
+    this.socket?.disconnect();
+    this.scene.start('BallCrushStartScene', { username: this.username, uid: this.uid });
   }
 
   private showWinningsPopup() {
-    const popup = this.add.text(180, 200, '+$0.50', {
-      fontSize: '32px',
-      color: '#ffff00',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
+    const t = this.add.text(180, 200, '+$0.50', {
+      fontSize: '32px', color: '#ffff00', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 4
     }).setOrigin(0.5);
-
-    this.tweens.add({
-      targets: popup,
-      y: 150,
-      alpha: 0,
-      duration: 2000,
-      ease: 'Power2',
-      onComplete: () => popup.destroy()
-    });
-  }
-
-  private resetBall(whoScored: 'player' | 'opponent') {
-    if (whoScored === 'opponent') {
-      // Opponent scored - remove player health
-      this.playerHealth--;
-
-      // Remove player health bar
-      if (this.playerHealthBars.length > 0) {
-        this.playerHealthBars[this.playerHealthBars.length - 1].destroy();
-        this.playerHealthBars.pop();
-      }
-
-      // Flash red for player damage
-      this.cameras.main.flash(300, 255, 0, 0, 0.5);
-
-      // Check if player lost
-      if (this.playerHealth <= 0) {
-        this.speedMultiplier = 1.0;
-        this.gameOver('CPU Wins!', false); // Pass false for lost
-        return;
-      }
-    } else {
-      // Player scored - remove opponent health
-      this.opponentHealth--;
-
-      // Remove opponent health bar
-      if (this.opponentHealthBars.length > 0) {
-        this.opponentHealthBars[this.opponentHealthBars.length - 1].destroy();
-        this.opponentHealthBars.pop();
-      }
-
-      // Flash blue for opponent damage
-      this.cameras.main.flash(300, 0, 0, 255, 0.5);
-
-      // Check if opponent lost (PLAYER WINS!)
-      if (this.opponentHealth <= 0) {
-        this.speedMultiplier = 1.0;
-        this.gameOver('You Win!', true); // Pass true for won
-        return;
-      }
-    }
-
-    // Reset ball position to center
-    this.ball.x = 180;
-    this.ball.y = 320;
-
-    // Reset ball speed
-    this.ballSpeed = 200;
-
-    // Serve toward the player who just got scored on
-    let angle;
-    if (whoScored === 'opponent') {
-      angle = Phaser.Math.Between(225, 315); // Downward
-    } else {
-      angle = Phaser.Math.Between(45, 135);  // Upward
-    }
-
-    const rad = Phaser.Math.DegToRad(angle);
-    this.ballDirection.set(Math.cos(rad), Math.sin(rad));
-  }
-
-  private increaseSpeed() {
-    this.speedMultiplier *= 1.5;
-    this.ballSpeed = 200 * this.speedMultiplier;
-
-    this.cameras.main.flash(500, 255, 255, 255, 0.3);
-
-    const speedText = this.add.text(180, 200, `SPEED x${this.speedMultiplier.toFixed(1)}!`, {
-      fontSize: '28px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      stroke: '#ff0000',
-      strokeThickness: 4
-    }).setOrigin(0.5);
-
-    this.tweens.add({
-      targets: speedText,
-      y: 150,
-      alpha: 0,
-      duration: 2000,
-      ease: 'Power2',
-      onComplete: () => speedText.destroy()
-    });
+    this.tweens.add({ targets: t, y: 150, alpha: 0, duration: 2000, ease: 'Power2', onComplete: () => t.destroy() });
   }
 
   private addBackgroundEffects() {
     for (let i = 0; i < 5; i++) {
       const x = Phaser.Math.Between(50, 310);
       const y = Phaser.Math.Between(100, 540);
-      const circle = this.add.circle(x, y, 10, 0xffaa00, 0.05);
-
+      const c = this.add.circle(x, y, 10, 0xffaa00, 0.05);
       this.tweens.add({
-        targets: circle,
-        y: y + 20,
-        alpha: 0.1,
-        duration: 3000 + i * 500,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.easeInOut'
+        targets: c, y: y + 20, alpha: 0.1, duration: 3000 + i * 500,
+        yoyo: true, repeat: -1, ease: 'Sine.easeInOut'
       });
     }
   }

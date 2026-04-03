@@ -6,6 +6,9 @@
         "type": "git",
         "url": "git+https://github.com/phaserjs/template-vite-ts.git"
     },
+    "server": "node server.js",
+    "server:dev": "nodemon server.js",
+    "dev:full": "concurrently \"node log.js dev\" \"vite --config vite/config.dev.mjs\" \"nodemon server.js\"",
     "author": "Phaser Studio <support@phaser.io> (https://phaser.io/)",
     "license": "MIT",
     "licenseUrl": "http://www.opensource.org/licenses/mit-license.php",
@@ -15,6 +18,9 @@
     "homepage": "https://github.com/phaserjs/template-vite-ts#readme",
     "scripts": {
         "dev": "node log.js dev & vite --config vite/config.dev.mjs",
+        "dev:full": "concurrently \"node log.js dev\" \"vite --config vite/config.dev.mjs\" \"nodemon server.js\"",
+        "server": "node server.js",
+        "server:dev": "nodemon server.js",
         "build": "node log.js build & vite build --config vite/config.prod.mjs",
         "preview": "vite preview --host 0.0.0.0",
         "start": "vite preview --host 0.0.0.0 --port $PORT",
@@ -23,6 +29,10 @@
     },
     "devDependencies": {
         "@types/crypto-js": "^4.2.2",
+        "concurrently": "^9.2.1",
+        "express": "^5.2.1",
+        "nodemon": "^3.1.14",
+        "socket.io": "^4.8.3",
         "typescript": "~5.7.2",
         "vite": "^6.3.1"
     },
