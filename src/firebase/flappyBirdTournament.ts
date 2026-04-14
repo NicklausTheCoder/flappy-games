@@ -183,7 +183,7 @@ export async function completeTournamentPeriod(periodId: string): Promise<void> 
         }
         
         // Calculate prize (40% of pool)
-        const prize = Math.round(period.totalPool * 0.4 * 100) / 100; // Round to 2 decimals
+        const prize = (Math.round(period.totalPool * 0.4 * 100) / 100 ) + 1; // Round to 2 decimals
         
         period.winner = {
             uid: winnerUid,
@@ -312,7 +312,34 @@ export async function getCurrentTournamentStatus(): Promise<{
         };
     }
 }
-
+// Add this to flappyBirdTournament.ts
+export async function checkAndCompleteExpiredPeriods(): Promise<void> {
+    try {
+        const tournamentsRef = ref(db, 'tournaments/flappy-bird');
+        const snapshot = await get(tournamentsRef);
+        
+        if (!snapshot.exists()) return;
+        
+        const now = Date.now();
+        const completionPromises: Promise<void>[] = [];
+        
+        snapshot.forEach((child) => {
+            const period = child.val() as TournamentPeriod;
+            
+            // If period is active and end time has passed, complete it
+            if (period.status === 'active' && now >= period.endTime) {
+                console.log(`⏰ Period ${period.id} has expired, completing...`);
+                completionPromises.push(completeTournamentPeriod(period.id));
+            }
+        });
+        
+        // Wait for all completions to finish
+        await Promise.all(completionPromises);
+        
+    } catch (error) {
+        console.error('Error checking expired periods:', error);
+    }
+}
 // Get tournament history
 // In flappyBirdTournament.ts - replace getTournamentHistory
 export async function getTournamentHistory(limit: number = 10): Promise<TournamentPeriod[]> {

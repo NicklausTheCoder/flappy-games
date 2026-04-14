@@ -4,6 +4,7 @@ import {
   updateFlappyBirdWalletBalance,
   saveFlappyBirdScore
 } from '../../firebase/flappyBirdSimple';
+import { checkAndCompleteExpiredPeriods } from '../../firebase/flappyBirdTournament';
 
 export class FlappyBirdGameOverScene extends Phaser.Scene {
   private userData!: FlappyBirdUserData;
@@ -53,7 +54,7 @@ private async storeScoreInDatabase() {
             0,
             0
         );
-        
+         await checkAndCompleteExpiredPeriods();
         if (success) {
             console.log('✅ Score saved successfully');
             
@@ -183,14 +184,6 @@ private async storeScoreInDatabase() {
     return button;
   }
 
-  private async deductAndPlay() {
-
-    this.scene.start('FlappyBirdStartScene', {
-      username: this.userData.username,
-      uid: this.uid,
-
-    });
-  }
 
 
 }

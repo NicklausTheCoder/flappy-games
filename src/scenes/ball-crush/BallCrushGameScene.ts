@@ -9,51 +9,51 @@ import {
 const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'https://game-server-xvdu.onrender.com';
 
 interface GameState {
-  ball:    { x: number; y: number };
+  ball: { x: number; y: number };
   paddles: { my: number; opponent: number };
-  health:  { my: number; opponent: number };
+  health: { my: number; opponent: number };
 }
 
 export class BallCrushGameScene extends Phaser.Scene {
   private username: string = '';
-  private uid:      string = '';
-  private roomId:   string = '';
-  private myRole:   'bottom' | 'top' = 'bottom';
+  private uid: string = '';
+  private roomId: string = '';
+  private myRole: 'bottom' | 'top' = 'bottom';
 
-  private socket!:         Socket;
+  private socket!: Socket;
   private lastSentPaddleX: number = 180;
 
-  private myPaddle!:       Phaser.GameObjects.Image;
+  private myPaddle!: Phaser.GameObjects.Image;
   private opponentPaddle!: Phaser.GameObjects.Image;
-  private ball!:           Phaser.GameObjects.Image;
+  private ball!: Phaser.GameObjects.Image;
 
   private targetBallX: number = 180;
   private targetBallY: number = 320;
 
-  private scoreText!:         Phaser.GameObjects.Text;
-  private myHealthBars:       Phaser.GameObjects.Image[] = [];
+  private scoreText!: Phaser.GameObjects.Text;
+  private myHealthBars: Phaser.GameObjects.Image[] = [];
   private opponentHealthBars: Phaser.GameObjects.Image[] = [];
-  private waitingText?:       Phaser.GameObjects.Text;
-  private debugText!:         Phaser.GameObjects.Text;
+  private waitingText?: Phaser.GameObjects.Text;
+  private debugText!: Phaser.GameObjects.Text;
 
-  private gameActive:    boolean = false;
-  private currentScore:  number  = 0;
-  private gameStartTime: number  = 0;
+  private gameActive: boolean = false;
+  private currentScore: number = 0;
+  private gameStartTime: number = 0;
 
   // ── Input state ─────────────────────────────────────────────────────
   // Track pointer separately so we can ignore stale presses from lobby
-  private pointerActive:   boolean = false;
-  private pointerX:        number  = 180;
-  private inputLocked:     boolean = true;   // locked until gameStart fires
+  private pointerActive: boolean = false;
+  private pointerX: number = 180;
+  private inputLocked: boolean = true;   // locked until gameStart fires
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private moveSpeed: number = 6;
 
   // Layout — identical for both players (server sends perspective-correct coords)
-  private readonly MY_PADDLE_Y  = 550;
+  private readonly MY_PADDLE_Y = 550;
   private readonly OPP_PADDLE_Y = 50;
   private readonly MIN_PADDLE_X = 35;
   private readonly MAX_PADDLE_X = 325;
-  private readonly CENTER_X     = 180;
+  private readonly CENTER_X = 180;
 
   // Debug
   private frameCount: number = 0;
@@ -66,20 +66,20 @@ export class BallCrushGameScene extends Phaser.Scene {
 
   init(data: { username: string; uid: string; lobbyId: string; role: 'bottom' | 'top' }) {
     this.username = data.username || 'Player';
-    this.uid      = data.uid      || '';
-    this.roomId   = data.lobbyId;
-    this.myRole   = data.role     || 'bottom';
+    this.uid = data.uid || '';
+    this.roomId = data.lobbyId;
+    this.myRole = data.role || 'bottom';
     console.log(`⚽ BallCrushGameScene | role=${this.myRole} | room=${this.roomId}`);
   }
 
   create() {
-    this.gameStartTime   = Date.now();
+    this.gameStartTime = Date.now();
     this.lastSentPaddleX = this.CENTER_X;
-    this.inputLocked     = true;   // ← locked until server says gameStart
-    this.pointerActive   = false;
-    this.gameActive      = false;
-    this.stateCount      = 0;
-    this.frameCount      = 0;
+    this.inputLocked = true;   // ← locked until server says gameStart
+    this.pointerActive = false;
+    this.gameActive = false;
+    this.stateCount = 0;
+    this.frameCount = 0;
 
     if (this.textures.exists('ball-background')) {
       const bg = this.add.image(180, 320, 'ball-background');
@@ -103,10 +103,10 @@ export class BallCrushGameScene extends Phaser.Scene {
     this.socket.on('connect', () => {
       console.log(`🔌 Socket connected: ${this.socket.id}`);
       this.socket.emit('joinRoom', {
-        roomId:   this.roomId,
+        roomId: this.roomId,
         username: this.username,
-        uid:      this.uid,
-        role:     this.myRole
+        uid: this.uid,
+        role: this.myRole
       });
     });
 
@@ -124,11 +124,11 @@ export class BallCrushGameScene extends Phaser.Scene {
       }
 
       // ── KEY FIX: Reset paddle to centre and unlock input ─────────────
-      this.myPaddle.x      = this.CENTER_X;
+      this.myPaddle.x = this.CENTER_X;
       this.lastSentPaddleX = this.CENTER_X;
-      this.pointerActive   = false;        // discard any stale touch
-      this.pointerX        = this.CENTER_X;
-      this.inputLocked     = false;        // NOW allow input
+      this.pointerActive = false;        // discard any stale touch
+      this.pointerX = this.CENTER_X;
+      this.inputLocked = false;        // NOW allow input
       // ─────────────────────────────────────────────────────────────────
 
       this.gameActive = true;
@@ -194,8 +194,8 @@ export class BallCrushGameScene extends Phaser.Scene {
     });
 
     this.socket.on('point', ({ scorer, health }: { scorer: 'bottom' | 'top'; health: { bottom: number; top: number } }) => {
-      const myHealth  = this.myRole === 'bottom' ? health.bottom : health.top;
-      const oppHealth = this.myRole === 'bottom' ? health.top    : health.bottom;
+      const myHealth = this.myRole === 'bottom' ? health.bottom : health.top;
+      const oppHealth = this.myRole === 'bottom' ? health.top : health.bottom;
 
       console.log(
         `[DEBUG][${this.myRole}] point by ${scorer}` +
@@ -262,7 +262,7 @@ export class BallCrushGameScene extends Phaser.Scene {
 
     // Keyboard
     if (this.cursors) {
-      if (this.cursors.left?.isDown)  newX = Math.max(this.MIN_PADDLE_X, newX - this.moveSpeed);
+      if (this.cursors.left?.isDown) newX = Math.max(this.MIN_PADDLE_X, newX - this.moveSpeed);
       if (this.cursors.right?.isDown) newX = Math.min(this.MAX_PADDLE_X, newX + this.moveSpeed);
     }
 
@@ -308,13 +308,13 @@ export class BallCrushGameScene extends Phaser.Scene {
         return;
       }
       this.pointerActive = true;
-      this.pointerX      = pointer.x;
+      this.pointerX = pointer.x;
     });
 
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
       if (this.inputLocked || !pointer.isDown) return;
       this.pointerActive = true;
-      this.pointerX      = pointer.x;
+      this.pointerX = pointer.x;
     });
 
     this.input.on('pointerup', () => {
@@ -386,7 +386,7 @@ export class BallCrushGameScene extends Phaser.Scene {
   }
 
   private syncHealthBars(myHealth: number, oppHealth: number) {
-    while (this.myHealthBars.length > myHealth)        this.myHealthBars.pop()?.destroy();
+    while (this.myHealthBars.length > myHealth) this.myHealthBars.pop()?.destroy();
     while (this.opponentHealthBars.length > oppHealth) this.opponentHealthBars.pop()?.destroy();
   }
 
@@ -396,49 +396,22 @@ export class BallCrushGameScene extends Phaser.Scene {
   }
 
   private async handleGameOver(won: boolean, winnerUsername: string) {
-    this.gameActive  = false;
+    this.gameActive = false;
     this.inputLocked = true;
-    const duration   = Math.floor((Date.now() - this.gameStartTime) / 1000);
+    const duration = Math.floor((Date.now() - this.gameStartTime) / 1000);
 
-    if (this.uid) {
-      try {
-        await updateBallCrushProfileStats(this.uid, this.currentScore, won, duration);
-        if (won) {
-          await addBallCrushWinnings(this.uid, 0.50, `Ball Crush victory - Score: ${this.currentScore}`);
-          this.showWinningsPopup();
-        }
-      } catch (err) {
-        console.error('Firebase error:', err);
-      }
-    }
-
-    const overlay = this.add.graphics();
-    overlay.fillStyle(0x000000, 0.6);
-    overlay.fillRect(0, 0, 360, 640);
-    overlay.setDepth(20);
-
-    this.add.text(180, 260, 'GAME OVER', {
-      fontSize: '32px', color: '#ff0000', fontStyle: 'bold',
-      stroke: '#000000', strokeThickness: 4
-    }).setOrigin(0.5).setDepth(21);
-
-    this.add.text(180, 310, won ? 'You Win! 🏆' : `${winnerUsername} Wins!`, {
-      fontSize: '24px', color: won ? '#ffff00' : '#ff6666', fontStyle: 'bold',
-      stroke: '#000000', strokeThickness: 3
-    }).setOrigin(0.5).setDepth(21);
-
-    this.add.text(180, 355, `Score: ${this.currentScore}`, {
-      fontSize: '20px', color: '#ffffff', fontStyle: 'bold'
-    }).setOrigin(0.5).setDepth(21);
-
-    this.add.text(180, 400, 'Tap to return to menu', {
-      fontSize: '16px', color: '#cccccc'
-    }).setOrigin(0.5).setDepth(21);
-
-    // Short delay before allowing tap so they don't accidentally dismiss
-    this.time.delayedCall(800, () => {
-      this.input.once('pointerdown', () => this.returnToMenu());
+    // Launch the Game Over scene with all the data
+    this.scene.start('BallCrushGameOverScene', {
+      score: this.currentScore,
+      won: won,
+      winnerUsername: winnerUsername,
+      uid: this.uid,
+      username: this.username,
+      duration: duration
     });
+
+    // Stop the current game scene
+    this.scene.stop();
   }
 
   private returnToMenu() {
@@ -446,13 +419,7 @@ export class BallCrushGameScene extends Phaser.Scene {
     this.scene.start('BallCrushStartScene', { username: this.username, uid: this.uid });
   }
 
-  private showWinningsPopup() {
-    const t = this.add.text(180, 200, '+$0.50', {
-      fontSize: '32px', color: '#ffff00', fontStyle: 'bold',
-      stroke: '#000000', strokeThickness: 4
-    }).setOrigin(0.5).setDepth(25);
-    this.tweens.add({ targets: t, y: 150, alpha: 0, duration: 2000, ease: 'Power2', onComplete: () => t.destroy() });
-  }
+
 
   private addBackgroundEffects() {
     for (let i = 0; i < 5; i++) {

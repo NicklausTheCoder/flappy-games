@@ -1,6 +1,7 @@
 // src/scenes/flappy-bird/PrizeTournamentScene.ts
 import Phaser from 'phaser';
 import {
+    checkAndCompleteExpiredPeriods,
     getCurrentTournamentStatus,
     getTournamentHistory,
     TournamentPeriod
@@ -68,6 +69,8 @@ export class PrizeTournamentScene extends Phaser.Scene {
     // In PrizeTournamentScene.ts - update the display methods
     private async loadTournamentData() {
         try {
+
+            await checkAndCompleteExpiredPeriods();
             this.tournamentStatus = await getCurrentTournamentStatus();
             this.tournamentHistory = await getTournamentHistory(5);
 
@@ -79,11 +82,7 @@ export class PrizeTournamentScene extends Phaser.Scene {
         }
     }
 
-    private refreshDisplay() {
-        // Clear everything and redraw
-        this.children.removeAll();
-        this.create();
-    }
+
 
     private showHistory() {
         // Clear the current display
@@ -241,7 +240,7 @@ export class PrizeTournamentScene extends Phaser.Scene {
             color: '#ffff00',
             fontStyle: 'bold'
         }).setOrigin(0.5);
-const potentialPrize = Math.round(this.tournamentStatus.totalPool * 0.4 * 100) / 100;
+        const potentialPrize = (Math.round(this.tournamentStatus.totalPool * 0.4 * 100) / 100 ) + 1;
         // Pool and players
         this.poolText = this.add.text(90, 150, `💰 $${potentialPrize}`, {
             fontSize: '18px',
@@ -256,7 +255,7 @@ const potentialPrize = Math.round(this.tournamentStatus.totalPool * 0.4 * 100) /
         });
 
         // Prize pool info
-      
+
 
 
         // Current leaders section
@@ -374,11 +373,6 @@ const potentialPrize = Math.round(this.tournamentStatus.totalPool * 0.4 * 100) /
         }
     }
 
-    private showHistory() {
-        // Clear previous display (simplified - in real app you'd properly remove old elements)
-        this.scene.restart({ username: this.username, uid: this.uid });
-        // Then show history view
-    }
 
     private showInfoPopup() {
         const popup = this.add.graphics();
@@ -464,16 +458,19 @@ const potentialPrize = Math.round(this.tournamentStatus.totalPool * 0.4 * 100) /
                     await this.loadTournamentData();
                 }
             } else {
-                // ← Period just ended — load the NEW period and redraw
+                // Period just ended - load the NEW period and redraw
                 clearInterval(this.timerInterval);
                 this.timerInterval = null;
-                await this.loadTournamentData(); // This fetches the new period ID
-                this.children.removeAll(true);  // Clear screen
-                await this.create();            // Redraw with new period data
+
+                // Check for expired periods first
+                await checkAndCompleteExpiredPeriods();
+
+                await this.loadTournamentData();
+                this.children.removeAll(true);
+                await this.create();
             }
         }, 1000);
     }
-
     // Update the shutdown method:
     shutdown() {
         if (this.timerInterval) {

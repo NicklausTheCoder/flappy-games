@@ -93,10 +93,10 @@ init(data: {
             if (playerWon) {
                 await addCheckersWinnings(
                     this.uid,
-                    0.50,
+                    1.50,
                     `Checkers victory! Captured ${this.piecesCaptured} pieces, ${this.kingsMade} kings`
                 );
-                console.log('💰 Added $0.50 to winnings');
+                console.log('💰 Added $1.50 to winnings');
             }
             
             // 3. Save game history
@@ -193,7 +193,7 @@ init(data: {
         
         // Winnings if player won
         if (playerWon) {
-            const winningsPopup = this.add.text(180, 350, '+$0.50', {
+            const winningsPopup = this.add.text(180, 350, '+$1.50', {
                 fontSize: '24px',
                 color: '#00ff00',
                 fontStyle: 'bold',
