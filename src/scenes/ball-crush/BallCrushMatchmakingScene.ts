@@ -1,7 +1,7 @@
 // src/scenes/ball-crush/BallCrushMatchmakingScene.ts
 import Phaser from 'phaser';
 import { ballCrushMultiplayer } from '../../firebase/ballCrushMultiplayer';
-import { ref, get, onValue, remove } from 'firebase/database';
+import { ref, onValue, remove } from 'firebase/database';
 import { db } from '../../firebase/init';
 
 export class BallCrushMatchmakingScene extends Phaser.Scene {
@@ -10,18 +10,22 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
   private displayName: string = '';
   private avatar: string = '';
 
-  private searchTime: number = 0;
   private searchTimer!: Phaser.Time.TimerEvent;
-  private matchCheckInterval: number = 0;
+  private heartbeatTimer!: Phaser.Time.TimerEvent;
   private cancelled: boolean = false;
   private matchFound: boolean = false;
-  private maxSearchTime: number = 60000; // 60 seconds max
+  private isTransitioning: boolean = false;
+  private maxSearchTime: number = 90000; // 90 seconds
   private searchStartTime: number = 0;
-  // UI Elements
-  private matchListener: (() => void) | null = null;  // Add this line
+
+  // Firebase listener — this is the ONLY mechanism for match detection
+  private matchListener: (() => void) | null = null;
+
+  // UI
   private searchText!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
   private cancelBtn!: Phaser.GameObjects.Text;
+  private timerText!: Phaser.GameObjects.Text;
   private ball!: Phaser.GameObjects.Arc;
   private innerBall!: Phaser.GameObjects.Arc;
 
@@ -30,48 +34,21 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
   }
 
   init(data: { username: string; uid: string; displayName: string; avatar: string }) {
-    console.log('🎯 BallCrushMatchmakingScene init STARTED with data:', data);
-
-    try {
-     
-
-      this.username = data.username || '';
-      this.uid = data.uid || '';
-      this.displayName = data.displayName || data.username || '';
-      this.avatar = data.avatar || 'default';
-
-      console.log('✅ BallCrushMatchmakingScene init SUCCESS:', {
-        username: this.username,
-        uid: this.uid,
-        displayName: this.displayName
-      });
-
-    } catch (error) {
-      console.error('❌ Error in BallCrushMatchmakingScene init:', error);
-    }
+    this.username    = data.username    || '';
+    this.uid         = data.uid         || '';
+    this.displayName = data.displayName || data.username || '';
+    this.avatar      = data.avatar      || 'default';
+    this.cancelled   = false;
+    this.matchFound  = false;
+    this.isTransitioning = false;
   }
 
   async create() {
-    // Background
     this.searchStartTime = Date.now();
+
     this.cameras.main.setBackgroundColor('#1a3a1a');
     this.addBackgroundBalls();
-    // Add after the cancel button or somewhere visible
-    const refreshBtn = this.add.text(180, 550, '↻ REFRESH', {
-      fontSize: '16px',
-      color: '#ffffff',
-      backgroundColor: '#2196F3',
-      padding: { x: 15, y: 8 }
-    })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
 
-    refreshBtn.on('pointerdown', async () => {
-      if (!this.matchFound && !this.cancelled) {
-        this.statusText.setText('Refreshing...');
-        await this.checkForMatch();
-      }
-    });
     // Title
     this.add.text(180, 100, '⚽ FINDING OPPONENT', {
       fontSize: '24px',
@@ -81,29 +58,31 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
       strokeThickness: 4
     }).setOrigin(0.5);
 
-    // Player info
-    this.add.text(180, 150, `Player: ${this.displayName}`, {
+    this.add.text(180, 140, `Player: ${this.displayName}`, {
       fontSize: '14px',
       color: '#ffffff'
     }).setOrigin(0.5);
 
-    // Create bouncing ball animation
     this.createBouncingBall();
 
-    // Search text
     this.searchText = this.add.text(180, 380, 'Searching', {
       fontSize: '20px',
       color: '#ffffff'
     }).setOrigin(0.5);
 
-    // Status text (shows matchmaking info)
-    this.statusText = this.add.text(180, 420, 'Looking for players...', {
+    this.statusText = this.add.text(180, 415, 'Looking for players...', {
       fontSize: '14px',
       color: '#aaaaaa'
     }).setOrigin(0.5);
 
+    // Elapsed timer
+    this.timerText = this.add.text(180, 445, '0s', {
+      fontSize: '12px',
+      color: '#666666'
+    }).setOrigin(0.5);
+
     // Cancel button
-    this.cancelBtn = this.add.text(180, 500, '❌ CANCEL', {
+    this.cancelBtn = this.add.text(180, 510, '❌ CANCEL', {
       fontSize: '20px',
       color: '#ffffff',
       backgroundColor: '#f44336',
@@ -112,125 +91,36 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
 
-    this.cancelBtn.on('pointerdown', () => {
-      this.cancelSearch();
-    });
+    this.cancelBtn.on('pointerdown', () => this.cancelSearch());
 
-    // Animate dots on search text
+    // Animated search dots
     let dots = 0;
     this.searchTimer = this.time.addEvent({
       delay: 500,
       callback: () => {
-        if (!this.matchFound && !this.cancelled) {
-          dots = (dots + 1) % 4;
-          this.searchText.setText('Searching' + '.'.repeat(dots));
-          this.searchTime += 0.5;
+        if (this.matchFound || this.cancelled) return;
+        dots = (dots + 1) % 4;
+        this.searchText.setText('Searching' + '.'.repeat(dots));
 
-          // Pulse animation
-          this.tweens.add({
-            targets: this.searchText,
-            scale: 1.05,
-            duration: 200,
-            yoyo: true,
-            ease: 'Sine.easeInOut'
-          });
+        const elapsed = Math.floor((Date.now() - this.searchStartTime) / 1000);
+        this.timerText.setText(`${elapsed}s`);
+
+        // Timeout check
+        if (Date.now() - this.searchStartTime > this.maxSearchTime) {
+          this.handleTimeout();
         }
       },
       loop: true
     });
 
-    // Join matchmaking queue
-    await this.joinQueue();
-    this.time.addEvent({
-      delay: 15000, // Every 15 seconds
-      callback: () => {
-        if (!this.cancelled && !this.matchFound) {
-          ballCrushMultiplayer.setPlayerOnline(this.uid, true);
-          ballCrushMultiplayer.setPlayerQueueStatus(this.uid, true);
-        }
-      },
-      loop: true
-    });
-    // ADD THIS: Listen for direct match notification
-    // This is the KEY fix - it will instantly notify when a lobby is created
-    const matchRef = ref(db, `matches/${this.uid}`);
-    this.matchListener = onValue(matchRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const match = snapshot.val();
-        console.log('🎯 DIRECT MATCH NOTIFICATION RECEIVED!', match);
-
-        // Remove the notification so we don't get it again
-        remove(ref(db, `matches/${this.uid}`));
-
-        // Stop checking
-        if (this.matchCheckInterval) {
-          clearInterval(this.matchCheckInterval);
-          this.matchCheckInterval = 0;
-        }
-
-        // Stop search timer
-        if (this.searchTimer) {
-          this.searchTimer.destroy();
-        }
-
-        // Go to lobby immediately
-        this.goToLobby(match.lobbyId);
-      }
-    });
-
-    this.time.delayedCall(1000, async () => {
-      if (!this.matchFound && !this.cancelled) {
-        await this.checkForMatch();
-      }
-    });
-    // Start checking for match
-    this.startMatchChecking();
-  }
-  // Add this variable to store the listener
-
-
-  // Update shutdown to clean up the listener
-
-  private createBouncingBall() {
-    // Create main ball
-    this.ball = this.add.circle(180, 280, 30, 0xffaa00, 0.9);
-
-    // Inner ball
-    this.innerBall = this.add.circle(180, 280, 18, 0xffffff, 0.5);
-
-    // Bounce animation
-    this.tweens.add({
-      targets: [this.ball, this.innerBall],
-      y: 240,
-      duration: 800,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Bounce.easeOut'
-    });
-
-    // Pulse animation
-    this.tweens.add({
-      targets: this.ball,
-      scale: 1.2,
-      duration: 1000,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut'
-    });
-
-    // Rotation animation for inner ball
-    this.tweens.add({
-      targets: this.innerBall,
-      angle: 360,
-      duration: 2000,
-      repeat: -1,
-      ease: 'Linear'
-    });
+    // ── Join queue ──
+    await this.joinQueueAndListen();
   }
 
-  private async joinQueue() {
+  private async joinQueueAndListen() {
+    if (this.cancelled) return;
+
     try {
-      console.log('🔍 Joining matchmaking queue...');
       this.statusText.setText('Joining queue...');
 
       await ballCrushMultiplayer.joinQueue(
@@ -240,155 +130,104 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
         this.avatar
       );
 
-      console.log('✅ Joined matchmaking queue');
-      this.statusText.setText('In queue - waiting for opponent...');
+      this.statusText.setText('In queue — waiting for opponent...');
+
+      // ── THE ONLY match detection mechanism ──
+      // The matchmaking service writes to matches/${uid} when a lobby is ready.
+      // joinQueue already cleared any stale matches/ entry, so this is clean.
+      const matchRef = ref(db, `matches/${this.uid}`);
+      this.matchListener = onValue(matchRef, async (snapshot) => {
+        if (!snapshot.exists() || this.matchFound || this.cancelled) return;
+
+        const match = snapshot.val();
+        console.log('🎯 Match notification received:', match);
+
+        // Validate the lobby actually exists before transitioning
+        const lobby = await ballCrushMultiplayer.getLobby(match.lobbyId);
+        if (!lobby) {
+          console.warn('⚠️ Match notification pointed to missing lobby, re-queuing...');
+          await remove(matchRef);
+          // Re-join queue — the matchmaker will pair us again
+          this.time.delayedCall(500, () => this.joinQueueAndListen());
+          return;
+        }
+
+        // Consume the notification immediately so it won't re-fire on refresh
+        await remove(matchRef);
+        this.goToLobby(match.lobbyId);
+      });
+
+      // ── Heartbeat: refresh our presence so matchmaker knows we're still alive ──
+      this.heartbeatTimer = this.time.addEvent({
+        delay: 10000, // every 10 seconds
+        callback: async () => {
+          if (this.cancelled || this.matchFound) return;
+          await ballCrushMultiplayer.setPlayerOnline(this.uid, true);
+          await ballCrushMultiplayer.setPlayerQueueStatus(this.uid, true);
+        },
+        loop: true
+      });
 
     } catch (error) {
       console.error('❌ Failed to join queue:', error);
-      this.statusText.setText('Failed to join queue. Retrying...');
-
-      // Retry after 2 seconds
+      this.statusText.setText('Connection error. Retrying...');
       this.time.delayedCall(2000, () => {
-        this.joinQueue();
+        if (!this.cancelled) this.joinQueueAndListen();
       });
     }
   }
 
-  private startMatchChecking() {
-    console.log('🔍 Starting match check interval...');
+  private handleTimeout() {
+    if (this.cancelled || this.matchFound) return;
+    this.cancelled = true;
 
-    this.matchCheckInterval = window.setInterval(async () => {
-      await this.checkForMatch();
-    }, 1000); // Check every 2 seconds
-  }
-
-  private async checkForMatch() {
-    if (this.matchFound || this.cancelled) return;
-    if (Date.now() - this.searchStartTime > this.maxSearchTime) {
-      // ... timeout code ...
-      return;
-    }
-
-    try {
-      // Get all lobbies
-      const lobbiesRef = ref(db, 'lobbies');
-      const snapshot = await get(lobbiesRef);
-
-      if (!snapshot.exists()) return;
-
-      const lobbies = snapshot.val();
-      let foundLobby = false;
-      const now = Date.now();
-
-      // Find a lobby where this player is a member
-      for (const [lobbyId, lobbyData] of Object.entries(lobbies)) {
-        const lobby = lobbyData as any;
-
-        // Skip old lobbies (older than 5 minutes)
-        if (now - lobby.createdAt > 300000) { // 5 minutes in milliseconds
-          console.log(`🗑️ Skipping old lobby: ${lobbyId}`);
-          continue;
-        }
-
-        // Check if it's a ball-crush lobby and contains this player
-        if (lobby.gameId === 'ball-crush' &&
-          lobby.playerIds &&
-          lobby.playerIds.includes(this.uid)) {
-
-          console.log('🎯 Match found! Lobby:', lobbyId);
-          this.matchFound = true;
-          foundLobby = true;
-
-          // Update UI
-          this.statusText.setText('Match found!');
-          this.searchText.setText('Opponent located!');
-
-          // Add a flash effect
-          this.cameras.main.flash(500, 255, 255, 255);
-
-          // Stop checking
-          if (this.matchCheckInterval) {
-            clearInterval(this.matchCheckInterval);
-            this.matchCheckInterval = 0;
-          }
-
-          // Stop search timer
-          if (this.searchTimer) {
-            this.searchTimer.destroy();
-          }
-
-          // Cancel button becomes "CONTINUE"
-          this.cancelBtn.setText('✅ CONTINUE');
-          this.cancelBtn.setStyle({ backgroundColor: '#4CAF50' });
-          this.cancelBtn.off('pointerdown');
-          this.cancelBtn.on('pointerdown', () => {
-            this.goToLobby(lobbyId);
-          });
-
-          // Also auto-continue after 2 seconds
-          this.time.delayedCall(2000, () => {
-            if (!this.cancelled && this.matchFound) {
-              this.goToLobby(lobbyId);
-            }
-          });
-
-          break;
-        }
-      }
-
-      // If no lobby found, log that we're still searching
-      if (!foundLobby) {
-        console.log('⏳ Still searching for match...');
-      }
-
-    } catch (error) {
-      console.error('Error checking for match:', error);
-    }
-  }
-
-private isTransitioning: boolean = false;
-
-private goToLobby(lobbyId: string) {
-  if (this.isTransitioning) return;
-  this.isTransitioning = true;
-  
-  console.log('🚀 Moving to lobby:', lobbyId);
-
-  // Fade out
-  this.cameras.main.fadeOut(500, 0, 0, 0);
-
-  this.cameras.main.once('camerafadeoutcomplete', () => {
-    this.scene.start('BallCrushLobbyScene', {
-      username: this.username,
-      uid: this.uid,
-      lobbyId: lobbyId
+    this.statusText.setText('No opponent found. Try again!');
+    this.searchText.setText('Timed out');
+    this.cancelBtn.setText('🔄 TRY AGAIN');
+    this.cancelBtn.setStyle({ backgroundColor: '#ff9800' });
+    this.cancelBtn.off('pointerdown');
+    this.cancelBtn.on('pointerdown', () => {
+      // Reset state and retry
+      this.cancelled  = false;
+      this.matchFound = false;
+      this.searchStartTime = Date.now();
+      this.cancelBtn.setText('❌ CANCEL');
+      this.cancelBtn.setStyle({ backgroundColor: '#f44336' });
+      this.cancelBtn.off('pointerdown');
+      this.cancelBtn.on('pointerdown', () => this.cancelSearch());
+      this.joinQueueAndListen();
     });
-  });
-}
+  }
+
+  private goToLobby(lobbyId: string) {
+    if (this.isTransitioning || this.cancelled) return;
+    this.isTransitioning = true;
+    this.matchFound = true;
+
+    this.statusText.setText('Match found! Loading lobby...');
+    this.searchText.setText('Opponent located!');
+    this.cameras.main.flash(500, 255, 255, 255);
+
+    this.cameras.main.fadeOut(600, 0, 0, 0);
+    this.cameras.main.once('camerafadeoutcomplete', () => {
+      this.scene.start('BallCrushLobbyScene', {
+        username: this.username,
+        uid:      this.uid,
+        lobbyId
+      });
+    });
+  }
 
   private async cancelSearch() {
     if (this.cancelled || this.matchFound) return;
-
     this.cancelled = true;
-    console.log('🚪 Cancelling match search...');
 
     this.statusText.setText('Cancelling...');
+    this.stopTimers();
 
-    // Stop timers
-    if (this.searchTimer) {
-      this.searchTimer.destroy();
-    }
-
-    if (this.matchCheckInterval) {
-      clearInterval(this.matchCheckInterval);
-    }
-
-    // Leave queue
     await ballCrushMultiplayer.leaveQueue(this.uid);
 
-    // Fade out and go back
-    this.cameras.main.fadeOut(500, 0, 0, 0);
-
+    this.cameras.main.fadeOut(400, 0, 0, 0);
     this.cameras.main.once('camerafadeoutcomplete', () => {
       this.scene.start('BallCrushStartScene', {
         username: this.username,
@@ -397,17 +236,66 @@ private goToLobby(lobbyId: string) {
     });
   }
 
+  private stopTimers() {
+    if (this.searchTimer)    this.searchTimer.destroy();
+    if (this.heartbeatTimer) this.heartbeatTimer.destroy();
+  }
+
+  // ── Cleanup when Phaser shuts down the scene ──
+  shutdown() {
+    this.stopTimers();
+
+    if (this.matchListener) {
+      this.matchListener();
+      this.matchListener = null;
+    }
+
+    if (!this.matchFound && !this.cancelled) {
+      ballCrushMultiplayer.leaveQueue(this.uid);
+    }
+
+    ballCrushMultiplayer.setPlayerOnline(this.uid, false);
+  }
+
+  // ── Visual helpers ────────────────────────────────────────────────────────
+
+  private createBouncingBall() {
+    this.ball = this.add.circle(180, 280, 30, 0xffaa00, 0.9);
+    this.innerBall = this.add.circle(180, 280, 18, 0xffffff, 0.5);
+
+    this.tweens.add({
+      targets: [this.ball, this.innerBall],
+      y: 240,
+      duration: 800,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Bounce.easeOut'
+    });
+
+    this.tweens.add({
+      targets: this.ball,
+      scale: 1.2,
+      duration: 1000,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut'
+    });
+
+    this.tweens.add({
+      targets: this.innerBall,
+      angle: 360,
+      duration: 2000,
+      repeat: -1,
+      ease: 'Linear'
+    });
+  }
+
   private addBackgroundBalls() {
-    // Add floating balls in the background
     for (let i = 0; i < 8; i++) {
       const x = Phaser.Math.Between(20, 340);
       const y = Phaser.Math.Between(20, 620);
-      const size = Phaser.Math.Between(10, 30);
-      const alpha = Phaser.Math.FloatBetween(0.05, 0.15);
-
-      const ball = this.add.circle(x, y, size, 0xffaa00, alpha);
-
-      // Add floating animation
+      const ball = this.add.circle(x, y, Phaser.Math.Between(10, 30), 0xffaa00,
+        Phaser.Math.FloatBetween(0.05, 0.15));
       this.tweens.add({
         targets: ball,
         y: y + 20,
@@ -419,14 +307,10 @@ private goToLobby(lobbyId: string) {
       });
     }
 
-    // Add small particles
     for (let i = 0; i < 20; i++) {
       const x = Phaser.Math.Between(0, 360);
       const y = Phaser.Math.Between(0, 640);
-      const size = Phaser.Math.Between(2, 4);
-
-      const dot = this.add.circle(x, y, size, 0xffaa00, 0.1);
-
+      const dot = this.add.circle(x, y, Phaser.Math.Between(2, 4), 0xffaa00, 0.1);
       this.tweens.add({
         targets: dot,
         x: x + Phaser.Math.Between(-30, 30),
@@ -437,28 +321,5 @@ private goToLobby(lobbyId: string) {
         ease: 'Sine.easeInOut'
       });
     }
-  }
-
-  shutdown() {
-    // Clean up
-    if (this.matchCheckInterval) {
-      clearInterval(this.matchCheckInterval);
-    }
-
-    if (this.searchTimer) {
-      this.searchTimer.destroy();
-    }
-
-    if (this.matchListener) {
-      this.matchListener();
-    }
-
-    // Set offline status
-    if (!this.matchFound && !this.cancelled) {
-      ballCrushMultiplayer.leaveQueue(this.uid);
-    }
-
-    // Always set offline when leaving scene
-    ballCrushMultiplayer.setPlayerOnline(this.uid, false);
   }
 }
