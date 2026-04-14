@@ -6,7 +6,7 @@ import {
   addBallCrushWinnings,
 } from '../../firebase/ballCrushSimple';
 
-const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001';
+const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'https://game-server-xvdu.onrender.com';
 
 interface GameState {
   ball:    { x: number; y: number };
