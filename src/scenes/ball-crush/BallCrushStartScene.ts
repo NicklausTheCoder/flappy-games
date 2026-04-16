@@ -2,11 +2,11 @@
 import Phaser from 'phaser';
 import {
   getBallCrushBalance,
-  updateBallCrushWalletBalance,
   getBallCrushUserData,
   getBallCrushLeaderboard,
   BallCrushUserData,
-  BallCrushLeaderboardEntry
+  BallCrushLeaderboardEntry,
+  deductBallCrushWalletBalance
 } from '../../firebase/ballCrushSimple';
 
 export class BallCrushStartScene extends Phaser.Scene {
@@ -43,10 +43,10 @@ export class BallCrushStartScene extends Phaser.Scene {
       return;
     }
 
-    this.username    = data.username;
-    this.uid         = data.uid || '';
+    this.username = data.username;
+    this.uid = data.uid || '';
     this.displayName = data.displayName || data.username;
-    this.avatar      = data.avatar || 'default';
+    this.avatar = data.avatar || 'default';
   }
 
   // ─── create ────────────────────────────────────────────────────────────────
@@ -80,18 +80,18 @@ export class BallCrushStartScene extends Phaser.Scene {
       throw new Error('No user data found for: ' + this.username);
     }
 
-    this.userData    = userData;
+    this.userData = userData;
     this.leaderboard = leaderboard;
-    this.balance     = balance;
+    this.balance = balance;
 
-    const rankIndex  = leaderboard.findIndex(e => e.username === this.username);
-    this.playerRank  = rankIndex >= 0 ? rankIndex + 1 : 0;
+    const rankIndex = leaderboard.findIndex(e => e.username === this.username);
+    this.playerRank = rankIndex >= 0 ? rankIndex + 1 : 0;
 
     console.log('✅ Ball Crush user data fetched:', {
-      username:    this.username,
+      username: this.username,
       gamesPlayed: this.userData.gamesPlayed,
-      gamesWon:    this.userData.gamesWon,
-      balance:     this.balance
+      gamesWon: this.userData.gamesWon,
+      balance: this.balance
     });
   }
 
@@ -121,11 +121,11 @@ export class BallCrushStartScene extends Phaser.Scene {
 
     // Floating background balls
     for (let i = 0; i < 6; i++) {
-      const x     = Phaser.Math.Between(20, 340);
-      const y     = Phaser.Math.Between(20, 620);
-      const size  = Phaser.Math.Between(8, 20);
+      const x = Phaser.Math.Between(20, 340);
+      const y = Phaser.Math.Between(20, 620);
+      const size = Phaser.Math.Between(8, 20);
       const alpha = Phaser.Math.FloatBetween(0.04, 0.12);
-      const dot   = this.add.circle(x, y, size, 0xffaa00, alpha);
+      const dot = this.add.circle(x, y, size, 0xffaa00, alpha);
       this.tweens.add({
         targets: dot, y: y + 20, duration: 3000 + i * 400,
         yoyo: true, repeat: -1, ease: 'Sine.easeInOut'
@@ -196,8 +196,8 @@ export class BallCrushStartScene extends Phaser.Scene {
     bg.lineStyle(1, 0xffaa00);
     bg.strokeRoundedRect(5, 5, 110, 40, 8);
 
-    this.add.text(10, 8,  '💰',  { fontSize: '20px' });
-    this.add.text(35, 8,  'Bal:', { fontSize: '12px', color: '#ffffff' });
+    this.add.text(10, 8, '💰', { fontSize: '20px' });
+    this.add.text(35, 8, 'Bal:', { fontSize: '12px', color: '#ffffff' });
     this.balanceText = this.add.text(35, 23, `${this.balance.toFixed(0)}`, {
       fontSize: '14px', color: '#00ff00', fontStyle: 'bold'
     });
@@ -213,8 +213,8 @@ export class BallCrushStartScene extends Phaser.Scene {
     bg.lineStyle(1, 0xffaa00);
     bg.strokeRoundedRect(245, 5, 110, 40, 8);
 
-    this.add.text(250, 8,  '📊',    { fontSize: '20px' });
-    this.add.text(275, 8,  'Stats:', { fontSize: '12px', color: '#ffffff' });
+    this.add.text(250, 8, '📊', { fontSize: '20px' });
+    this.add.text(275, 8, 'Stats:', { fontSize: '12px', color: '#ffffff' });
     this.statsText = this.add.text(265, 23, `${this.userData.gamesPlayed ?? 0} Games`, {
       fontSize: '12px', color: '#ffaa00', fontStyle: 'bold'
     });
@@ -228,8 +228,8 @@ export class BallCrushStartScene extends Phaser.Scene {
     bg.lineStyle(1, 0xffaa00);
     bg.strokeRoundedRect(125, 5, 110, 40, 8);
 
-    this.add.text(130, 8,  '🏆',   { fontSize: '20px' });
-    this.add.text(160, 8,  'Rank:', { fontSize: '12px', color: '#ffffff' });
+    this.add.text(130, 8, '🏆', { fontSize: '20px' });
+    this.add.text(160, 8, 'Rank:', { fontSize: '12px', color: '#ffffff' });
     this.rankText = this.add.text(165, 23, `#${this.playerRank || 999}`, {
       fontSize: '14px', color: '#ffaa00', fontStyle: 'bold'
     });
@@ -239,17 +239,17 @@ export class BallCrushStartScene extends Phaser.Scene {
   private createMenuButtons() {
     if (!this.userData) return;
 
-    const buttonWidth  = 160;
+    const buttonWidth = 160;
     const buttonHeight = 45;
-    const startX       = 180;
-    const startY       = 280;
+    const startX = 180;
+    const startY = 280;
 
     const buttons = [
-      { text: '🎮 FIND MATCH',     color: '#FF9800', action: 'matchmaking' },
-      { text: '🏆 LEADERBOARD',    color: '#2196F3', scene: 'BallCrushLeaderboardScene' },
-      { text: '👤 PROFILE',        color: '#9C27B0', scene: 'BallCrushProfileScene' },
-      { text: '📊 MY STATS',       color: '#9C27B0', scene: 'BallCrushStatsScene' },
-      { text: '🎮 BACK TO GAMES',  color: '#FF5722', url: 'https://wintapgames.com/games' },
+      { text: '🎮 FIND MATCH', color: '#FF9800', action: 'matchmaking' },
+      { text: '🏆 LEADERBOARD', color: '#2196F3', scene: 'BallCrushLeaderboardScene' },
+      { text: '👤 PROFILE', color: '#9C27B0', scene: 'BallCrushProfileScene' },
+      { text: '📊 MY STATS', color: '#9C27B0', scene: 'BallCrushStatsScene' },
+      { text: '🎮 BACK TO GAMES', color: '#FF5722', url: 'https://wintapgames.com/games' },
     ];
 
     buttons.forEach((btn, index) => {
@@ -310,17 +310,17 @@ export class BallCrushStartScene extends Phaser.Scene {
               yoyo: true,
               onComplete: () => {
                 console.log('🔍 Starting Ball Crush matchmaking with:', {
-                  username:     this.username,
-                  uid:          this.uid,
-                  displayName:  this.displayName,
-                  avatar:       this.avatar
+                  username: this.username,
+                  uid: this.uid,
+                  displayName: this.displayName,
+                  avatar: this.avatar
                 });
 
                 this.scene.start('BallCrushMatchmakingScene', {
-                  username:    this.username,
-                  uid:         this.uid,
+                  username: this.username,
+                  uid: this.uid,
                   displayName: this.displayName,
-                  avatar:      this.avatar
+                  avatar: this.avatar
                 });
               }
             });
@@ -332,9 +332,9 @@ export class BallCrushStartScene extends Phaser.Scene {
       } else if (btn.scene) {
         button.on('pointerdown', () => {
           this.scene.start(btn.scene!, {
-            username:  this.username,
-            uid:       this.uid,
-            userData:  this.userData
+            username: this.username,
+            uid: this.uid,
+            userData: this.userData
           });
         });
       }
@@ -350,10 +350,9 @@ export class BallCrushStartScene extends Phaser.Scene {
     try {
       console.log('💰 Deducting 1 coin game fee for UID:', this.uid);
 
-      const success = await updateBallCrushWalletBalance(
+      const success = await deductBallCrushWalletBalance(
         this.uid,
-        -1,
-        'loss',
+        1,  // positive amount only
         'Ball Crush game entry fee'
       );
 
@@ -372,9 +371,9 @@ export class BallCrushStartScene extends Phaser.Scene {
     popup.lineStyle(2, 0xff0000, 1);
     popup.strokeRoundedRect(40, 200, 280, 150, 10);
 
-    const icon    = this.add.text(180, 230, '⚠️', { fontSize: '40px' }).setOrigin(0.5);
-    const title   = this.add.text(180, 280, 'Insufficient Coins!', { fontSize: '18px', color: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5);
-    const sub     = this.add.text(180, 310, 'Need 1 coin to play', { fontSize: '14px', color: '#ffff00' }).setOrigin(0.5);
+    const icon = this.add.text(180, 230, '⚠️', { fontSize: '40px' }).setOrigin(0.5);
+    const title = this.add.text(180, 280, 'Insufficient Coins!', { fontSize: '18px', color: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5);
+    const sub = this.add.text(180, 310, 'Need 1 coin to play', { fontSize: '14px', color: '#ffff00' }).setOrigin(0.5);
     const closeBtn = this.add.text(180, 340, 'OK', {
       fontSize: '16px', color: '#ffffff',
       backgroundColor: '#4CAF50', padding: { x: 20, y: 5 }
@@ -382,7 +381,7 @@ export class BallCrushStartScene extends Phaser.Scene {
 
     const destroy = () => {
       popup.destroy(); icon.destroy(); title.destroy();
-      sub.destroy();   closeBtn.destroy();
+      sub.destroy(); closeBtn.destroy();
     };
 
     closeBtn.on('pointerdown', destroy);

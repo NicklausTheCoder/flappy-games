@@ -76,6 +76,23 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     private readonly SQUARE_SIZE = 38;
     private readonly BOARD_OFFSET_X = 28;
     private readonly BOARD_OFFSET_Y = 110;
+    private gameFullyLoaded: boolean = false;
+
+    // Add near your other private properties (~line 50)
+    private highPingCount: number = 0;
+    private lastHeartbeat: number = 0;
+    private readonly MAX_PING_THRESHOLD = 900; // ms
+    private readonly MAX_HIGH_PING_COUNT = 10; // kicks after 10 consecutive high pings
+    private readonly HEARTBEAT_INTERVAL = 5000; // 5 seconds
+    private heartbeatInterval: number = 0;
+    private opponentLastSeen: number = 0;
+
+
+    private inactivityTimer: number = 0;
+    private inactivityCountdown: number = 0;
+    private inactivityText!: Phaser.GameObjects.Text;
+    private readonly INACTIVITY_LIMIT = 15; // 15 seconds
+    private isInactivityWarningShown: boolean = false;
 
     // Visual effects
     private logBuffer: { message: string; additionalData?: any; timestamp: number }[] = [];
@@ -116,7 +133,33 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.storeLog(`🎨 My color: ${this.myColor === 'red' ? 'RED (HOST)' : 'BLACK (JOINER)'}`);
         this.storeLog(`🔄 Board flipped: ${this.isBoardFlipped}`);
     }
+    private async initializeHeartbeatPath() {
+        try {
+            const heartbeatRef = ref(db, `game_heartbeats/${this.lobbyId}`);
+            const snapshot = await get(heartbeatRef);
 
+            if (!snapshot.exists()) {
+                await set(heartbeatRef, {
+                    initialized: true,
+                    createdAt: Date.now(),
+                    gameId: this.lobbyId
+                });
+            }
+
+            // Initialize own heartbeat
+            const myHeartbeatRef = ref(db, `game_heartbeats/${this.lobbyId}/${this.uid}`);
+            await set(myHeartbeatRef, {
+                uid: this.uid,
+                username: this.username,
+                joinedAt: Date.now(),
+                isActive: true
+            });
+
+            this.storeLog('💓 Heartbeat path initialized');
+        } catch (error) {
+            this.storeLog('Failed to initialize heartbeat path:', error);
+        }
+    }
     async create() {
         // Background
         this.cameras.main.setBackgroundColor('#2c3e50');
@@ -135,6 +178,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.kingsMadeCount = 0;
         await this.initializeLogsPath();
         await this.initializePingPath();  // Add this line
+        await this.initializeHeartbeatPath(); // ADD THIS
         this.startLogBatching();
         // Load or initialize game state
         await this.initializeGameState();
@@ -151,6 +195,12 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.createPingDisplay();
         this.createConnectionQualityIndicator();
         this.startSyncCheck();
+        this.startHeartbeat(); // ADD THIS LINE
+
+        setTimeout(() => {
+            this.startInactivityTimer();
+            this.storeLog('⏰ Inactivity timer started');
+        }, 2000); // Start after 2 seconds to let game fully load
 
         this.storeLog('✅ Game scene ready');
     }
@@ -167,6 +217,53 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         for (let i = 0; i < this.BOARD_SIZE; i++) {
             this.pieces[i] = Array(this.BOARD_SIZE).fill(null);
         }
+    }
+    private startHeartbeat() {
+        // Clear any existing interval
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+        }
+
+        this.heartbeatInterval = window.setInterval(async () => {
+            if (!this.gameActive) return;
+
+            try {
+                const heartbeatRef = ref(db, `game_heartbeats/${this.lobbyId}/${this.uid}`);
+
+                // UPDATE existing path instead of creating new
+                await update(heartbeatRef, {
+                    lastHeartbeat: Date.now(),
+                    ping: this.currentPing,
+                    isActive: true,
+                    lastSeen: Date.now()
+                });
+
+                this.lastHeartbeat = Date.now();
+
+                // Only check opponent after 10 seconds of game start
+                if (this.gameStartTime && (Date.now() - this.gameStartTime) > 10000) {
+                    if (this.opponent?.uid) {
+                        const opponentHeartbeatRef = ref(db, `game_heartbeats/${this.lobbyId}/${this.opponent.uid}`);
+                        const snapshot = await get(opponentHeartbeatRef);
+
+                        if (snapshot.exists()) {
+                            const opponentData = snapshot.val();
+                            this.opponentLastSeen = opponentData.lastHeartbeat || opponentData.timestamp || 0;
+
+                            // Check for disconnect - but with longer timeout (30 seconds)
+                            const timeSinceOpponentHeartbeat = Date.now() - this.opponentLastSeen;
+                            if (timeSinceOpponentHeartbeat > 30000 && !this.gameWinner) {
+                                this.storeLog(`⚠️ Opponent disconnected! Last seen: ${timeSinceOpponentHeartbeat}ms ago`);
+                                await this.handleOpponentDisconnect();
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                this.storeLog('Heartbeat error:', error);
+            }
+        }, 5000); // Every 5 seconds
     }
     private createBoard() {
         for (let row = 0; row < this.BOARD_SIZE; row++) {
@@ -208,12 +305,125 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             }
         }
     }
+
+
+    private startInactivityTimer() {
+        // Clear existing timer
+        if (this.inactivityTimer) {
+            clearInterval(this.inactivityTimer);
+        }
+
+        this.inactivityCountdown = this.INACTIVITY_LIMIT;
+        this.isInactivityWarningShown = false;
+        this.inactivityText.setVisible(false);
+
+        this.inactivityTimer = window.setInterval(() => {
+            // Only check if it's this player's turn and game is active
+            if (this.myTurn && this.gameActive && !this.moveInProgress && !this.gameWinner) {
+                this.inactivityCountdown--;
+
+                // Show warning when 10 seconds remaining
+                if (this.inactivityCountdown <= 10 && !this.isInactivityWarningShown) {
+                    this.isInactivityWarningShown = true;
+                    this.inactivityText.setVisible(true);
+                    this.showStatusMessage(`⚠️ ${this.inactivityCountdown} seconds to move!`, 1000);
+                }
+
+                // Update countdown display
+                if (this.inactivityCountdown <= 10) {
+                    let color = '#ffaa00';
+                    if (this.inactivityCountdown <= 5) color = '#ff0000';
+                    if (this.inactivityCountdown <= 3) color = '#ff6600';
+
+                    this.inactivityText.setText(`⏰ Move in: ${this.inactivityCountdown}s`);
+                    this.inactivityText.setColor(color);
+                    this.inactivityText.setVisible(true);
+                }
+
+                // Time's up - award win to opponent
+                if (this.inactivityCountdown <= 0) {
+                    this.storeLog(`⏰ Player inactive for ${this.INACTIVITY_LIMIT} seconds - awarding win to opponent`);
+                    clearInterval(this.inactivityTimer);
+                    this.inactivityTimer = 0;
+                    this.inactivityText.setVisible(false);
+                    this.handleInactivityLoss();
+                }
+            } else {
+                // Reset timer if it's not player's turn
+                if (this.inactivityCountdown !== this.INACTIVITY_LIMIT) {
+                    this.resetInactivityTimer();
+                }
+            }
+        }, 1000);
+    }
+
+    private resetInactivityTimer() {
+        if (this.inactivityTimer) {
+            clearInterval(this.inactivityTimer);
+            this.inactivityTimer = 0;
+        }
+        this.inactivityCountdown = this.INACTIVITY_LIMIT;
+        this.isInactivityWarningShown = false;
+        this.inactivityText.setVisible(false);
+    }
+
+    private async handleInactivityLoss() {
+        if (!this.gameActive || this.gameWinner) return;
+
+        this.storeLog(`⏰ Player inactive for ${this.INACTIVITY_LIMIT} seconds - awarding win to opponent`);
+
+        this.gameActive = false;
+
+        // Award win to opponent
+        if (this.opponent?.uid) {
+            try {
+                // CRITICAL: Update the game state in Firebase first
+                const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
+                await update(gameStateRef, {
+                    winner: this.opponent.uid,  // Opponent is the winner
+                    finishedAt: Date.now(),
+                    winnerColor: this.myColor === 'red' ? 'black' : 'red', // Opponent's color
+                    winReason: 'inactivity'
+                });
+
+                // Then end the game through the multiplayer service
+                await checkersMultiplayer.endGame(this.lobbyId, this.opponent.uid);
+
+                // Store inactivity record
+                const inactivityRef = ref(db, `game_inactivity/${this.lobbyId}`);
+                await set(inactivityRef, {
+                    inactiveUid: this.uid,
+                    inactiveUsername: this.username,
+                    reason: `No move for ${this.INACTIVITY_LIMIT} seconds`,
+                    timestamp: Date.now(),
+                    winnerUid: this.opponent.uid,
+                    winnerUsername: this.opponent.displayName
+                });
+
+                this.storeLog(`✅ Win awarded to opponent: ${this.opponent.displayName}`);
+
+                // Show loss message for current player
+                this.showGameOver('TIME\'S UP! You lost due to inactivity');
+
+            } catch (error) {
+                this.storeLog('Error awarding win for inactivity:', error);
+            }
+        }
+
+        this.cleanup();
+    }
     private createUI() {
         // Opponent info (top)
-        this.opponentNameText = this.add.text(180, 20, '⚫ Waiting for opponent...', {
-            fontSize: '16px',
-            color: '#aaaaaa'
-        }).setOrigin(0.5);
+
+        this.inactivityText = this.add.text(180, 550, '', {
+            fontSize: '14px',
+            color: '#ffaa00',
+            backgroundColor: '#000000',
+            padding: { x: 8, y: 4 }
+        }).setOrigin(0.5).setVisible(false);
+
+
+
 
         // My info (bottom) - always show at bottom of screen
         const myColorText = this.myColor === 'red' ? '🔴 RED' : '⚫ BLACK';
@@ -469,12 +679,44 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
         const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
 
-        this.gameStateUnsubscribe = onValue(gameStateRef, async (snapshot) => {
+        setTimeout(() => {
+            if (this.opponent?.uid && this.gameActive) {
+                const opponentHeartbeatRef = ref(db, `game_heartbeats/${this.lobbyId}/${this.opponent.uid}`);
+                onValue(opponentHeartbeatRef, (snapshot) => {
+                    if (!snapshot.exists() && this.gameActive && !this.gameWinner) {
+                        this.storeLog('⚠️ Opponent heartbeat stopped - disconnecting');
+                        this.handleOpponentDisconnect();
+                    }
+                });
+            }
+        }, 5000); // Wait 5 seconds before monitoring
 
-            if (this.moveInProgress) return;
+
+        this.gameStateUnsubscribe = onValue(gameStateRef, async (snapshot) => {
+            // MOVE WINNER CHECK HERE - BEFORE the moveInProgress check
             if (!snapshot.exists() || !this.gameActive) return;
 
             const state = snapshot.val();
+
+            // CHECK WINNER FIRST - this is the critical fix
+            if (state.winner && state.winner !== this.gameWinner) {
+                this.storeLog(`🏆 WIN detected for player: ${state.winner}`);
+                this.gameWinner = state.winner;
+                this.gameActive = false;
+                const winnerText = state.winner === this.uid ? 'YOU WIN!' : `${this.opponent?.displayName || 'Opponent'} WINS!`;
+                this.showGameOver(winnerText);
+                return;
+            }
+
+
+
+            if (this.moveInProgress) return;
+
+
+
+            if (!snapshot.exists() || !this.gameActive) return;
+
+       
 
             // Check if game has ended
             if (state.winner && state.winner !== this.gameWinner) {
@@ -508,13 +750,24 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 this.currentPlayer = state.currentPlayer;
                 this.myTurn = (this.currentPlayer === this.myColor);
                 this.updateTurnDisplay();
+
+                // Reset inactivity timer on turn change
+                if (this.myTurn) {
+                    this.resetInactivityTimer();
+                    this.startInactivityTimer();
+                } else {
+                    this.resetInactivityTimer();
+                }
             }
         });
     }
 
     private async applyOpponentMove(move: GameMove) {
+
         this.moveInProgress = true;
 
+        this.resetInactivityTimer();
+        this.startInactivityTimer(); // Start timer for player's turn
         this.storeLog(`🎯 Applying opponent move from [${move.fromRow},${move.fromCol}] to [${move.toRow},${move.toCol}]`);
 
         // Update board state in memory FIRST
@@ -674,6 +927,11 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
     private async makeMove(fromRow: number, fromCol: number, toRow: number, toCol: number) {
         if (this.moveInProgress) return;
+
+        this.resetInactivityTimer();
+        this.startInactivityTimer(); // Restart for next turn
+
+
         this.moveInProgress = true;
         this.movesCount++;
         // Check if this is a capture move
@@ -1130,17 +1388,14 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         }
     }
     private startPingCheck() {
-        // Check ping every 3 seconds
         this.pingInterval = window.setInterval(async () => {
             if (!this.gameActive) return;
 
             const startTime = Date.now();
 
             try {
-                // Ensure the ping path exists
                 const pingRef = ref(db, `ping/${this.lobbyId}/${this.uid}`);
 
-                // Write a small ping
                 await update(pingRef, {
                     lastPing: startTime,
                     lastSeen: Date.now()
@@ -1149,17 +1404,30 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 const endTime = Date.now();
                 const ping = endTime - startTime;
 
-                // Add to history
                 this.pingHistory.push(ping);
-                if (this.pingHistory.length > 5) {
-                    this.pingHistory.shift();
-                }
+                if (this.pingHistory.length > 5) this.pingHistory.shift();
 
-                // Calculate average ping
                 const avgPing = this.pingHistory.reduce((a, b) => a + b, 0) / this.pingHistory.length;
                 this.currentPing = Math.round(avgPing);
 
-                // Update display with color coding
+                // CHECK FOR HIGH PING
+                if (this.currentPing > this.MAX_PING_THRESHOLD) {
+                    this.highPingCount++;
+                    this.storeLog(`⚠️ High ping detected: ${this.currentPing}ms (count: ${this.highPingCount}/${this.MAX_HIGH_PING_COUNT})`);
+                    this.showPingWarning(); // ADD THIS
+
+
+                    if (this.highPingCount >= this.MAX_HIGH_PING_COUNT) {
+                        this.storeLog(`❌ Kicking player for high ping: ${this.currentPing}ms`);
+                        await this.handleHighPingKick();
+                        return;
+                    }
+                } else {
+                    // Reset counter if ping is acceptable
+                    this.highPingCount = 0;
+                }
+
+                // Update display
                 let color = '#00ff00';
                 if (this.currentPing > 150) color = '#ffff00';
                 if (this.currentPing > 300) color = '#ff6600';
@@ -1168,15 +1436,15 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 this.pingText.setText(`Ping: ${this.currentPing} ms`);
                 this.pingText.setColor(color);
 
-                // Clean up old ping entries periodically
-                if (Math.random() < 0.1) { // 10% chance each ping
+                // Clean up old pings
+                if (Math.random() < 0.1) {
                     const oldPings = ref(db, `ping/${this.lobbyId}`);
                     const snapshot = await get(oldPings);
                     if (snapshot.exists()) {
                         const pings = snapshot.val();
                         const now = Date.now();
                         for (const [uid, data] of Object.entries(pings)) {
-                            if (uid !== 'initialized' && data.lastSeen && (now - data.lastSeen) > 60000) {
+                            if (uid !== 'initialized' && (data as any).lastSeen && (now - (data as any).lastSeen) > 60000) {
                                 await remove(ref(db, `ping/${this.lobbyId}/${uid}`));
                             }
                         }
@@ -1184,14 +1452,12 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 }
 
             } catch (error) {
-                // Silently fail - don't store logs to avoid infinite loop
                 console.warn('Ping check failed:', error);
                 this.pingText.setText('Ping: --- ms');
                 this.pingText.setColor('#ff6666');
             }
         }, 3000);
     }
-
     private createConnectionQualityIndicator() {
         // Create a small dot indicator at top left
         const qualityDot = this.add.circle(20, 20, 8, 0x00ff00);
@@ -1229,6 +1495,66 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             loop: true
         });
     }
+    private async handleHighPingKick() {
+        if (!this.gameActive) return;
+
+        this.gameActive = false;
+
+        // Award win to opponent
+        if (this.opponent?.uid) {
+            await checkersMultiplayer.endGame(this.lobbyId, this.opponent.uid);
+
+            // Show kicked message
+            this.showGameOver(`KICKED: High ping (${this.currentPing}ms)`);
+
+            // Store kick record
+            const kickRef = ref(db, `game_kicks/${this.lobbyId}`);
+            await set(kickRef, {
+                kickedUid: this.uid,
+                kickedUsername: this.username,
+                reason: `High ping: ${this.currentPing}ms`,
+                timestamp: Date.now(),
+                winnerUid: this.opponent.uid
+            });
+        }
+
+        // Clean up
+        this.cleanup();
+    }
+
+    private async handleOpponentDisconnect() {
+        // Don't trigger during grace period
+        if (!this.gameFullyLoaded) {
+            this.storeLog('⚠️ Ignoring disconnect detection - game still loading');
+            return;
+        }
+
+        if (!this.gameActive || this.gameWinner) return;
+
+        this.storeLog(`🏆 Opponent disconnected - awarding win to you!`);
+
+        // Double-check with Firebase that opponent is really gone
+        if (this.opponent?.uid) {
+            const heartbeatRef = ref(db, `game_heartbeats/${this.lobbyId}/${this.opponent.uid}`);
+            const snapshot = await get(heartbeatRef);
+
+            // If heartbeat exists and is recent (within 10 seconds), ignore
+            if (snapshot.exists()) {
+                const data = snapshot.val();
+                if (data.lastHeartbeat && (Date.now() - data.lastHeartbeat) < 10000) {
+                    this.storeLog('⚠️ Opponent still active - ignoring disconnect');
+                    return;
+                }
+            }
+        }
+
+        // Proceed with disconnect win
+        this.gameActive = false;
+        await checkersMultiplayer.endGame(this.lobbyId, this.uid);
+        this.showGameOver('OPPONENT DISCONNECTED - YOU WIN!');
+    }
+
+
     private async checkWinCondition() {
         let redPieces = 0;
         let blackPieces = 0;
@@ -1517,6 +1843,12 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
 
     private showGameOver(message: string) {
+
+        if (this.inactivityTimer) {
+            clearInterval(this.inactivityTimer);
+            this.inactivityTimer = 0;
+        }
+        this.inactivityText.setVisible(false);
         this.gameActive = false;
 
         // Calculate game statistics
@@ -1766,7 +2098,18 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         }
     }
 
+    private showPingWarning() {
+        if (this.currentPing > this.MAX_PING_THRESHOLD) {
+            let warningText = this.add.text(180, 550, `⚠️ HIGH PING: ${this.currentPing}ms - Improve connection!`, {
+                fontSize: '12px',
+                color: '#ff0000',
+                backgroundColor: '#000000',
+                padding: { x: 5, y: 3 }
+            }).setOrigin(0.5);
 
+            this.time.delayedCall(3000, () => warningText.destroy());
+        }
+    }
     private cleanup() {
 
         this.flushLogsOnShutdown();
@@ -1774,11 +2117,23 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         if (this.gameStateUnsubscribe) this.gameStateUnsubscribe();
         off(ref(db, `games/checkers/${this.lobbyId}`));
 
-        // Clear ping interval
+       
+
+        // ADD THESE CLEANUPS
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = 0;
+        }
+
         if (this.pingInterval) {
             clearInterval(this.pingInterval);
             this.pingInterval = 0;
         }
+
+        // Remove heartbeat data
+        remove(ref(db, `game_heartbeats/${this.lobbyId}/${this.uid}`));
+        remove(ref(db, `ping/${this.lobbyId}/${this.uid}`));
+
 
         checkersMultiplayer.setPlayerOnline(this.uid, false).catch(err => this.storeLog(err));
         checkersMultiplayer.setPlayerGameStatus(this.uid, false).catch(err => this.storeLog(err));

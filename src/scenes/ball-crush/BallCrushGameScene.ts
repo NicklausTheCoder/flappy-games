@@ -2,11 +2,11 @@
 import Phaser from 'phaser';
 import { io, Socket } from 'socket.io-client';
 import {
-  updateBallCrushProfileStats,
-  addBallCrushWinnings,
 } from '../../firebase/ballCrushSimple';
 
-const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'https://game-server-xvdu.onrender.com';
+ const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'https://game-server-xvdu.onrender.com';
+// const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001';
+
 
 interface GameState {
   ball: { x: number; y: number };
@@ -60,6 +60,9 @@ export class BallCrushGameScene extends Phaser.Scene {
   private stateCount: number = 0;
   private lastBallYFromServer: number = -1;
 
+  private pingWarningBanner?: Phaser.GameObjects.Text;
+
+
   constructor() {
     super({ key: 'BallCrushGameScene' });
   }
@@ -109,6 +112,40 @@ export class BallCrushGameScene extends Phaser.Scene {
         role: this.myRole
       });
     });
+
+
+    // Reflect ping measurement immediately
+    this.socket.on('ping_check', () => {
+      this.socket.emit('pong_check');
+    });
+
+    // Bad connection warning — show banner for whichever player has lag
+    this.socket.on('pingWarning', ({ socketId, rtt }: { socketId: string; rtt: number }) => {
+      const isMe = socketId === this.socket.id;
+      const msg = isMe
+        ? `⚠️ YOUR connection is unstable (${rtt}ms)`
+        : `⚠️ Opponent has a poor connection (${rtt}ms)`;
+      const color = isMe ? '#ff4444' : '#ffaa00';
+
+      if (!this.pingWarningBanner) {
+        this.pingWarningBanner = this.add.text(180, 270, msg, {
+          fontSize: '13px', color, stroke: '#000', strokeThickness: 3,
+          backgroundColor: '#000000bb', padding: { x: 6, y: 4 },
+          align: 'center',
+        }).setOrigin(0.5).setDepth(200);
+      } else {
+        this.pingWarningBanner.setText(msg).setColor(color);
+      }
+
+      // Auto-hide after 4 s (reappears on next ping cycle if still bad)
+      this.time.delayedCall(4000, () => {
+        if (this.pingWarningBanner) {
+          this.pingWarningBanner.destroy();
+          this.pingWarningBanner = undefined;
+        }
+      });
+    });
+
 
     this.socket.on('roomJoined', ({ role }: { role: string }) => {
       console.log(`✅ roomJoined as ${role}`);

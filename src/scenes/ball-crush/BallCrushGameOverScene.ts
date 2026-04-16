@@ -1,6 +1,6 @@
 ﻿// src/scenes/ballcrush/BallCrushGameOverScene.ts
 import Phaser from 'phaser';
-import { updateBallCrushProfileStats, addBallCrushWinnings } from '../../firebase/ballCrushSimple';
+import { updateBallCrushProfileStats } from '../../firebase/ballCrushSimple';
 
 export class BallCrushGameOverScene extends Phaser.Scene {
     private score: number = 0;
@@ -43,15 +43,7 @@ export class BallCrushGameOverScene extends Phaser.Scene {
             // Update stats (wins/losses, high score, etc.)
             await updateBallCrushProfileStats(this.uid, this.score, this.won, this.gameDuration);
             
-            // Award winnings if player won
-            if (this.won) {
-                await addBallCrushWinnings(
-                    this.uid, 
-                    0.50, 
-                    `Ball Crush victory! Score: ${this.score}`
-                );
-                console.log('💰 Added $0.50 to winnings');
-            }
+         
         } catch (error) {
             console.error('❌ Error saving game result:', error);
         }

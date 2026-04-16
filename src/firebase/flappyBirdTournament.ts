@@ -42,17 +42,17 @@ export function getCurrentTournamentPeriod(): string {
     const day = String(now.getDate()).padStart(2, '0');
     const hour = Math.floor(now.getHours() / 4) * 4; // 0, 4, 8, 12, 16, 20
     const periodHour = String(hour).padStart(2, '0');
-    
+
     return `${year}-${month}-${day}-${periodHour}`;
 }
 
 // Get tournament period boundaries
 export function getTournamentPeriodBounds(periodId: string): { start: number; end: number } {
     const [year, month, day, hour] = periodId.split('-').map(Number);
-    
+
     const start = new Date(year, month - 1, day, hour, 0, 0, 0).getTime();
     const end = new Date(year, month - 1, day, hour + 4, 0, 0, 0).getTime();
-    
+
     return { start, end };
 }
 
@@ -62,13 +62,13 @@ export async function getOrCreateTournamentPeriod(): Promise<TournamentPeriod> {
         const periodId = getCurrentTournamentPeriod();
         const periodRef = ref(db, `tournaments/flappy-bird/${periodId}`);
         const snapshot = await get(periodRef);
-        
+
         const { start, end } = getTournamentPeriodBounds(periodId);
-        
+
         if (snapshot.exists()) {
             return snapshot.val() as TournamentPeriod;
         }
-        
+
         // Create new tournament period
         const newPeriod: TournamentPeriod = {
             id: periodId,
@@ -78,12 +78,12 @@ export async function getOrCreateTournamentPeriod(): Promise<TournamentPeriod> {
             totalPool: 0,
             status: 'active'
         };
-        
+
         await set(periodRef, newPeriod);
         console.log(`🎮 New tournament period created: ${periodId}`);
-        
+
         return newPeriod;
-        
+
     } catch (error) {
         console.error('❌ Error creating tournament period:', error);
         throw error;
@@ -101,18 +101,18 @@ export async function recordTournamentGame(
         const periodId = getCurrentTournamentPeriod();
         const periodRef = ref(db, `tournaments/flappy-bird/${periodId}`);
         const snapshot = await get(periodRef);
-        
+
         let period: TournamentPeriod;
-        
+
         if (snapshot.exists()) {
             period = snapshot.val() as TournamentPeriod;
         } else {
             period = await getOrCreateTournamentPeriod();
         }
-        
+
         // Update player stats
         const existingPlayer = period.players[uid];
-        
+
         period.players[uid] = {
             username: username,
             displayName: displayName,
@@ -120,23 +120,23 @@ export async function recordTournamentGame(
             gamesPlayed: (existingPlayer?.gamesPlayed || 0) + 1,
             lastPlayed: Date.now()
         };
-        
+
         // Add $1 to pool (game fee)
         period.totalPool = (period.totalPool || 0) + 1;
-        
+
         // Update in database
         await update(periodRef, {
             players: period.players,
             totalPool: period.totalPool
         });
-        
+
         console.log(`📊 Tournament updated for ${username}: +$1 to pool, total pool: $${period.totalPool}`);
-        
+
         // Check if period just ended
         if (Date.now() >= period.endTime && period.status === 'active') {
             await completeTournamentPeriod(periodId);
         }
-        
+
     } catch (error) {
         console.error('❌ Error recording tournament game:', error);
     }
@@ -147,24 +147,24 @@ export async function completeTournamentPeriod(periodId: string): Promise<void> 
     try {
         const periodRef = ref(db, `tournaments/flappy-bird/${periodId}`);
         const snapshot = await get(periodRef);
-        
+
         if (!snapshot.exists()) {
             console.log('Tournament period not found:', periodId);
             return;
         }
-        
+
         const period = snapshot.val() as TournamentPeriod;
-        
+
         if (period.status !== 'active') {
             return; // Already completed
         }
-        
+
         // Find winner (player with highest score)
         let winnerUid: string | null = null;
         let winnerUsername: string = '';
         let winnerDisplayName: string = '';
         let highestScore = 0;
-        
+
         Object.entries(period.players).forEach(([uid, player]) => {
             if (player.highestScore > highestScore) {
                 highestScore = player.highestScore;
@@ -173,7 +173,7 @@ export async function completeTournamentPeriod(periodId: string): Promise<void> 
                 winnerDisplayName = player.displayName;
             }
         });
-        
+
         if (!winnerUid) {
             // No players this period
             period.status = 'completed';
@@ -181,10 +181,10 @@ export async function completeTournamentPeriod(periodId: string): Promise<void> 
             console.log('🏁 Tournament period ended with no players');
             return;
         }
-        
+
         // Calculate prize (40% of pool)
-        const prize = (Math.round(period.totalPool * 0.4 * 100) / 100 ) + 1; // Round to 2 decimals
-        
+        const prize = (Math.round(period.totalPool * 0.4 * 100) / 100) + 1; // Round to 2 decimals
+
         period.winner = {
             uid: winnerUid,
             username: winnerUsername,
@@ -192,64 +192,50 @@ export async function completeTournamentPeriod(periodId: string): Promise<void> 
             score: highestScore,
             prize: prize
         };
-        
+
         period.status = 'completed';
-        
+
         await update(periodRef, {
             winner: period.winner,
             status: 'completed'
         });
-        
+
         console.log(`🏆 Tournament ${periodId} completed! Winner: ${winnerDisplayName} wins $${prize}`);
-        
+
         // Award prize to winner
         await awardTournamentPrize(winnerUid, prize, periodId);
-        
+
     } catch (error) {
         console.error('❌ Error completing tournament period:', error);
     }
 }
 
-// Award prize to winner
 async function awardTournamentPrize(uid: string, amount: number, periodId: string): Promise<void> {
     try {
-        // Add to wallet
-        const walletRef = ref(db, `wallets/${uid}`);
-        const walletSnapshot = await get(walletRef);
-        
-        let currentBalance = 0;
-        if (walletSnapshot.exists()) {
-            currentBalance = walletSnapshot.val().balance || 0;
-        }
-        
-        const newBalance = currentBalance + amount;
-        
-        await update(walletRef, {
+
+        const winningsBalanceRef = ref(db, `winningsBalance/${uid}`);
+        const snapshot = await get(winningsBalanceRef);
+        const currentWinnings = snapshot.exists() ? snapshot.val().balance || 0 : 0;
+
+
+        const newBalance = currentWinnings + amount;
+
+        await update(winningsBalanceRef, {
             balance: newBalance,
             lastUpdated: new Date().toISOString()
         });
-        
-        // Record transaction
-        const transactionsRef = ref(db, `transactions/${uid}`);
-        const newTransactionRef = push(transactionsRef);
-        await set(newTransactionRef, {
-            type: 'tournament_win',
+     
+      
+        // ✅ Uniform winnings path
+        await set(ref(db, `winnings/${uid}/${periodId}`), {
             amount: amount,
-            balance: newBalance,
-            description: `Tournament prize for period ${periodId}`,
-            timestamp: new Date().toISOString()
-        });
-        
-        // Record in tournament winnings
-        const winningsRef = ref(db, `tournament_winnings/${uid}/${periodId}`);
-        await set(winningsRef, {
-            amount: amount,
-            period: periodId,
+            game: 'flappy-bird',
+            periodId: periodId,
             awardedAt: new Date().toISOString()
         });
-        
-        console.log(`💰 Awarded $${amount} to ${uid} for tournament win`);
-        
+
+        console.log(`💰 Awarded $${amount} to ${uid} for flappy bird tournament win`);
+
     } catch (error) {
         console.error('❌ Error awarding tournament prize:', error);
     }
@@ -267,10 +253,10 @@ export async function getCurrentTournamentStatus(): Promise<{
         const periodId = getCurrentTournamentPeriod();
         const periodRef = ref(db, `tournaments/flappy-bird/${periodId}`);
         const snapshot = await get(periodRef);
-        
+
         const { end } = getTournamentPeriodBounds(periodId);
         const timeRemaining = Math.max(0, end - Date.now());
-        
+
         if (!snapshot.exists()) {
             return {
                 periodId,
@@ -280,9 +266,9 @@ export async function getCurrentTournamentStatus(): Promise<{
                 topPlayers: []
             };
         }
-        
+
         const period = snapshot.val() as TournamentPeriod;
-        
+
         // Get top 3 players
         const topPlayers = Object.entries(period.players || {})
             .map(([uid, player]) => ({
@@ -292,7 +278,7 @@ export async function getCurrentTournamentStatus(): Promise<{
             }))
             .sort((a, b) => b.score - a.score)
             .slice(0, 3);
-        
+
         return {
             periodId,
             timeRemaining,
@@ -300,7 +286,7 @@ export async function getCurrentTournamentStatus(): Promise<{
             players: Object.keys(period.players || {}).length,
             topPlayers
         };
-        
+
     } catch (error) {
         console.error('❌ Error getting tournament status:', error);
         return {
@@ -317,25 +303,25 @@ export async function checkAndCompleteExpiredPeriods(): Promise<void> {
     try {
         const tournamentsRef = ref(db, 'tournaments/flappy-bird');
         const snapshot = await get(tournamentsRef);
-        
+
         if (!snapshot.exists()) return;
-        
+
         const now = Date.now();
         const completionPromises: Promise<void>[] = [];
-        
+
         snapshot.forEach((child) => {
             const period = child.val() as TournamentPeriod;
-            
+
             // If period is active and end time has passed, complete it
             if (period.status === 'active' && now >= period.endTime) {
                 console.log(`⏰ Period ${period.id} has expired, completing...`);
                 completionPromises.push(completeTournamentPeriod(period.id));
             }
         });
-        
+
         // Wait for all completions to finish
         await Promise.all(completionPromises);
-        
+
     } catch (error) {
         console.error('Error checking expired periods:', error);
     }
@@ -346,22 +332,22 @@ export async function getTournamentHistory(limit: number = 10): Promise<Tourname
     try {
         const tournamentsRef = ref(db, 'tournaments/flappy-bird');
         const snapshot = await get(tournamentsRef); // Remove the query temporarily
-        
+
         if (!snapshot.exists()) {
             return [];
         }
-        
+
         const tournaments: TournamentPeriod[] = [];
-        
+
         snapshot.forEach((child) => {
             tournaments.push(child.val() as TournamentPeriod);
         });
-        
+
         // Sort manually by endTime (most recent first)
         const sorted = tournaments.sort((a, b) => b.endTime - a.endTime);
-        
+
         return sorted.slice(0, limit);
-        
+
     } catch (error) {
         console.error('❌ Error getting tournament history:', error);
         return [];

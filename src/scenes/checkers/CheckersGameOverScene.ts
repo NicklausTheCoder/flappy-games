@@ -3,9 +3,7 @@ import Phaser from 'phaser';
 import {
     CheckersUserData,
     updateCheckersStats,
-    addCheckersWinnings,
     saveCheckersGame,
-    updateCheckersWalletBalance
 } from '../../firebase/checkersService';
 
 export class CheckersGameOverScene extends Phaser.Scene {
@@ -88,16 +86,6 @@ export class CheckersGameOverScene extends Phaser.Scene {
                 this.kingsMade,
                 this.moves
             );
-
-            // 2. If player won, add winnings ($2.00 for multiplayer)
-            if (playerWon) {
-                await addCheckersWinnings(
-                    this.uid,
-                    1.50,  // Changed from 1.50 to 2.00
-                    `Checkers victory! Captured ${this.piecesCaptured} pieces, ${this.kingsMade} kings`
-                );
-                console.log('💰 Added $1.50 to winnings');
-            }
 
             // 3. Save game history
             await saveCheckersGame({

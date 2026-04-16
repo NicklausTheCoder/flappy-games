@@ -351,7 +351,7 @@ class BallCrushMultiplayer {
     lobbyId: string,
     callback: (lobby: BallCrushLobby | null) => void
   ): () => void {
-    if (!lobbyId) return () => {};
+    if (!lobbyId) return () => { };
     const lobbyRef = ref(db, `lobbies/${lobbyId}`);
     const unsub = onValue(lobbyRef, (snap) => {
       callback(snap.exists() ? (snap.val() as BallCrushLobby) : null);
@@ -435,7 +435,7 @@ class BallCrushMultiplayer {
   }
 
   subscribeToBallUpdates(lobbyId: string, callback: (ballData: any) => void): () => void {
-    if (!lobbyId) return () => {};
+    if (!lobbyId) return () => { };
     const ballRef = ref(db, `gameStates/${lobbyId}/ball`);
     const unsub = onValue(ballRef, (snap) => {
       if (snap.exists()) callback(snap.val());
@@ -450,7 +450,7 @@ class BallCrushMultiplayer {
     if (!lobby) return;
 
     const newHealth = Math.max(0, (lobby.players[opponentUid]?.health || 5) - 1);
-    const newScore  = (lobby.players[scorerUid]?.score || 0) + 1;
+    const newScore = (lobby.players[scorerUid]?.score || 0) + 1;
 
     await Promise.all([
       update(ref(db, `lobbies/${lobbyId}/players/${opponentUid}`), { health: newHealth }),
@@ -476,7 +476,6 @@ class BallCrushMultiplayer {
   }
 
   // =========== GAME END ===========
-
   async endGame(lobbyId: string, winnerUid: string): Promise<void> {
     if (!lobbyId || !winnerUid) return;
 
@@ -488,10 +487,11 @@ class BallCrushMultiplayer {
 
     console.log(`🏆 Game finished, winner: ${winnerUid}`);
 
-    // Clean up game state immediately; lobby persists briefly for UI
+    // Award prize server-side
+
+
     await remove(ref(db, `gameStates/${lobbyId}`));
 
-    // Remove lobby after 5 minutes (for post-game UI)
     setTimeout(async () => {
       await remove(ref(db, `lobbies/${lobbyId}`));
     }, 5 * 60 * 1000);
