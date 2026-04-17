@@ -4,9 +4,9 @@ import {
   getFlappyBirdLeaderboard,
   getFlappyBirdPlayerRank,
   getFlappyBirdBalance,
-  updateFlappyBirdWalletBalance,
   FlappyBirdUserData,
-  FlappyBirdLeaderboardEntry
+  FlappyBirdLeaderboardEntry,
+  deductFlappyBirdWalletBalance
 } from '../../firebase/flappyBirdSimple';
 
 
@@ -453,11 +453,10 @@ export class FlappyBirdStartScene extends Phaser.Scene {
     try {
       console.log('💰 Deducting $1 game fee for:', this.userData.username);
 
-      const success = await updateFlappyBirdWalletBalance(
+      const success = await deductFlappyBirdWalletBalance(
         this.uid,
-        -1.00,
-        'loss',
-        'Game entry fee'
+        1,  // amount to deduct
+        'Flappy Bird game entry fee'
       );
 
       if (success) {

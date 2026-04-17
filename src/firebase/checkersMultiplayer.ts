@@ -180,61 +180,80 @@ class CheckersMultiplayer {
   startMatchmakingService(): void {
     if (this.matchmakingListener) return;
 
-    const queueRef = ref(db, 'matchmaking/checkers');
-    this.matchmakingListener = onValue(queueRef, async (snapshot) => {
-      if (!snapshot.exists()) return;
+    const lockRef = ref(db, 'matchmaking_lock/checkers');
 
-      const queue = snapshot.val();
-      const players = Object.values(queue) as any[];
-
-      if (players.length < 2) return;
-
-      // Get online players
-      const onlinePlayers = [];
-      for (const player of players) {
-        const isOnline = await this.isPlayerOnlineAndInQueue(player.uid);
-        if (isOnline) onlinePlayers.push(player);
+    // Try to become the matchmaker
+    runTransaction(lockRef, (current) => {
+      const now = Date.now();
+      // If no lock or lock is stale (>15s old), claim it
+      if (!current || (now - current.claimedAt) > 15000) {
+        return { claimedAt: now, claimedBy: Math.random().toString(36).slice(2) };
       }
-
-      if (onlinePlayers.length < 2) return;
-
-      // Sort by join time (oldest first)
-      onlinePlayers.sort((a, b) => a.joinedAt - b.joinedAt);
-
-      // Use atomic transaction to claim the first player
-      const player1 = onlinePlayers[0];
-      const player2 = onlinePlayers[1];
-
-      if (player1.uid === player2.uid) {
-        await remove(ref(db, `matchmaking/checkers/${player1.uid}`));
+      return undefined; // Someone else has the lock, abort
+    }).then((result) => {
+      if (!result.committed) {
+        // Someone else is the matchmaker — just watch for our own match
+        console.log('👀 Another client is matchmaking, just listening for matches');
         return;
       }
 
-      // ATOMIC: Try to claim player1 using transaction
-      const player1Ref = ref(db, `matchmaking/checkers/${player1.uid}`);
-      const claimed = await this.atomicClaimPlayer(player1Ref);
+      console.log('🎯 This client is the matchmaker');
+      const myLockValue = result.snapshot.val();
 
-      if (!claimed) {
-        console.log(`⚠️ Could not claim player ${player1.username}, already matched`);
-        return;
-      }
+      // Renew the lock every 10s so it doesn't go stale
+      const renewInterval = setInterval(async () => {
+        if (!this.matchmakingListener) { clearInterval(renewInterval); return; }
+        await update(lockRef, { claimedAt: Date.now() });
+      }, 10000);
 
-      // Try to claim player2 atomically
-      const player2Ref = ref(db, `matchmaking/checkers/${player2.uid}`);
-      const claimed2 = await this.atomicClaimPlayer(player2Ref);
+      const queueRef = ref(db, 'matchmaking/checkers');
+      this.matchmakingListener = onValue(queueRef, async (snapshot) => {
+        if (!snapshot.exists()) return;
 
-      if (!claimed2) {
-        // Put player1 back if we can't claim player2
-        await set(player1Ref, player1);
-        console.log(`⚠️ Could not claim player ${player2.username}, rolling back`);
-        return;
-      }
+        // Verify we still hold the lock before doing any matching
+        const lockSnap = await get(lockRef);
+        if (!lockSnap.exists() || lockSnap.val().claimedBy !== myLockValue.claimedBy) {
+          console.log('⚠️ Lost matchmaking lock, stopping');
+          this.stopMatchmakingService();
+          clearInterval(renewInterval);
+          return;
+        }
 
-      console.log(`✅ Match found (atomic): ${player1.username} vs ${player2.username}`);
+        const queue = snapshot.val();
+        const players = Object.values(queue) as any[];
+        if (players.length < 2) return;
 
-      // Create lobby for these players
-      await this.createLobby(player1.uid, player2.uid, player1, player2);
-    });
+        const now = Date.now();
+        const online = players.filter(p => p.uid && (now - (p.joinedAt || 0)) < 120000);
+        if (online.length < 2) return;
+
+        online.sort((a, b) => a.joinedAt - b.joinedAt);
+
+        for (let i = 0; i + 1 < online.length; i += 2) {
+          const p1 = online[i];
+          const p2 = online[i + 1];
+          if (p1.uid === p2.uid) continue;
+
+          const claimed1 = await this.atomicClaimPlayer(ref(db, `matchmaking/checkers/${p1.uid}`));
+          if (!claimed1) continue;
+
+          const claimed2 = await this.atomicClaimPlayer(ref(db, `matchmaking/checkers/${p2.uid}`));
+          if (!claimed2) {
+            await set(ref(db, `matchmaking/checkers/${p1.uid}`), p1); // roll back
+            continue;
+          }
+
+          console.log(`✅ Matched: ${p1.username} vs ${p2.username}`);
+          try {
+            await this.createLobby(p1.uid, p2.uid, p1, p2);
+          } catch (err) {
+            console.error('Failed to create lobby, re-queuing:', err);
+            await set(ref(db, `matchmaking/checkers/${p1.uid}`), p1);
+            await set(ref(db, `matchmaking/checkers/${p2.uid}`), p2);
+          }
+        }
+      });
+    }).catch(console.error);
   }
 
   /**
@@ -243,12 +262,12 @@ class CheckersMultiplayer {
   private async atomicClaimPlayer(playerRef: any): Promise<boolean> {
     try {
       const result = await runTransaction(playerRef, (currentData) => {
-        if (currentData === null) {
-          return currentData; // Already taken
-        }
-        return null; // Remove it - we claim it
+        if (currentData === null) return undefined; // ABORT — already claimed
+        return null; // Claim it
       });
-      return result.committed;
+      // committed=true AND snapshot is null means WE set it to null (we won the race)
+      // committed=false means another client aborted us
+      return result.committed && result.snapshot.val() === null;
     } catch (error) {
       console.error('Transaction failed:', error);
       return false;
@@ -329,6 +348,10 @@ class CheckersMultiplayer {
     player1Data: any,
     player2Data: any
   ): Promise<string> {
+
+
+
+
     const lobbyId = `checkers_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
     const lobby: CheckersLobby = {

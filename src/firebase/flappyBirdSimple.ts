@@ -494,101 +494,11 @@ async function getLegacyFlappyBirdLeaderboard(limit: number): Promise<FlappyBird
 /**
  * Add winnings to user's separate winnings account (not spendable)
  */
-export async function addFlappyBirdWinnings(
-    uid: string,
-    amount: number,
-    description: string
-): Promise<boolean> {
-    try {
-        console.log(`💰 Adding Flappy Bird winnings for UID: ${uid}, amount: ${amount}`);
-
-        // Get current user data
-        const userRef = ref(db, `users/${uid}`);
-        const userSnapshot = await get(userRef);
-
-        if (!userSnapshot.exists()) {
-            console.error('❌ User not found');
-            return false;
-        }
-
-        const userData = userSnapshot.val();
-
-        // Get current winnings
-        const currentWinnings = userData.winnings?.total || 0;
-        const currentCount = userData.winnings?.count || 0;
-
-        // Update winnings
-        const newWinnings = {
-            total: currentWinnings + amount,
-            count: currentCount + 1,
-            lastWin: new Date().toISOString(),
-            history: [
-                ...(userData.winnings?.history || []),
-                {
-                    amount,
-                    date: new Date().toISOString(),
-                    description
-                }
-            ].slice(-10) // Keep last 10 wins
-        };
-
-        // Save to users path (separate from wallet)
-        await update(ref(db, `users/${uid}`), {
-            winnings: newWinnings
-        });
-
-        // Also save to a separate "winnings" collection
-        await set(ref(db, `winnings/${uid}/total`), newWinnings.total);
-        await set(ref(db, `winnings/${uid}/count`), newWinnings.count);
-
-        // Create transaction record in a separate "winnings_transactions" path
-        const transactionsRef = ref(db, `winnings_transactions/${uid}`);
-        const newTransactionRef = push(transactionsRef);
-        await set(newTransactionRef, {
-            amount,
-            balance: newWinnings.total,
-            description,
-            timestamp: new Date().toISOString(),
-            type: 'win'
-        });
-
-        console.log(`✅ Flappy Bird winnings updated. New total: $${newWinnings.total.toFixed(2)}`);
-        return true;
-
-    } catch (error) {
-        console.error('❌ Error adding Flappy Bird winnings:', error);
-        return false;
-    }
-}
 
 /**
  * Get user's winnings total
  */
-export async function getFlappyBirdWinnings(uid: string): Promise<number> {
-    try {
-        const winningsRef = ref(db, `users/${uid}/winnings/total`);
-        const snapshot = await get(winningsRef);
 
-        if (snapshot.exists()) {
-            return snapshot.val();
-        }
-
-        // Try alternative path
-        const altRef = ref(db, `winnings/${uid}/total`);
-        const altSnapshot = await get(altRef);
-
-        if (altSnapshot.exists()) {
-            return altSnapshot.val();
-        }
-
-        return 0;
-
-    } catch (error) {
-        console.error('Error getting Flappy Bird winnings:', error);
-        return 0;
-    }
-}
-// In flappyBirdSimple.ts - Add this new function
 // In flappyBirdSimple.ts - Fix the updateFlappyBirdLeaderboard function
 async function updateFlappyBirdLeaderboard(uid: string, score: number, userData: any) {
     try {
@@ -664,121 +574,61 @@ export async function getFlappyBirdWinCount(uid: string): Promise<number> {
 }
 
 // =========== UPDATE WALLET BALANCE ===========
-export async function updateFlappyBirdWalletBalance(
+export async function deductFlappyBirdWalletBalance(
     uid: string,
     amount: number,
-    type: 'bonus' | 'deposit' | 'withdrawal' | 'win' | 'loss',
     description: string
 ): Promise<boolean> {
     try {
-        console.log(`💰 Updating Flappy Bird wallet for UID: ${uid}, amount: ${amount}`);
+        console.log(`💰 Deducting ${amount} from Flappy Bird wallet for UID: ${uid}`);
 
         const walletRef = ref(db, `wallets/${uid}`);
         const walletSnapshot = await get(walletRef);
 
-        let currentBalance = 0;
-        let currentWalletData: any = {};
-
-        if (walletSnapshot.exists()) {
-            currentWalletData = walletSnapshot.val();
-            currentBalance = currentWalletData.balance || 0;
-        } else {
-            currentWalletData = {
-                balance: 0,
-                totalDeposited: 0,
-                totalWithdrawn: 0,
-                totalWon: 0,
-                totalLost: 0,
-                totalBonus: 0,
-                currency: 'USD',
-                isActive: true
-            };
+        if (!walletSnapshot.exists()) {
+            console.log('❌ Wallet not found');
+            return false;
         }
 
-        // Calculate new values based on transaction type
-        let newBalance = currentBalance;
-        let newTotalWon = currentWalletData.totalWon || 0;
-        let newTotalLost = currentWalletData.totalLost || 0;
-        let newTotalDeposited = currentWalletData.totalDeposited || 0;
-        let newTotalWithdrawn = currentWalletData.totalWithdrawn || 0;
-        let newTotalBonus = currentWalletData.totalBonus || 0;
+        const currentWalletData = walletSnapshot.val();
+        const currentBalance = currentWalletData.balance || 0;
 
-        switch(type) {
-            case 'win':
-                // Add to totalWon but NOT to balance
-                newTotalWon += amount;
-                break;
-                
-            case 'loss':
-                // Subtract from balance AND add to totalLost
-                if (currentBalance < amount) {
-                    console.log('❌ Insufficient funds');
-                    return false;
-                }
-                newBalance = currentBalance - amount;
-                newTotalLost += amount;
-                break;
-                
-            case 'deposit':
-                // Add to balance AND totalDeposited
-                newBalance = currentBalance + amount;
-                newTotalDeposited += amount;
-                break;
-                
-            case 'bonus':
-                // Add to balance AND totalBonus
-                newBalance = currentBalance + amount;
-                newTotalBonus += amount;
-                break;
-                
-            case 'withdrawal':
-                // Subtract from balance AND add to totalWithdrawn
-                if (currentBalance < amount) {
-                    console.log('❌ Insufficient funds');
-                    return false;
-                }
-                newBalance = currentBalance - amount;
-                newTotalWithdrawn += amount;
-                break;
+        // Check insufficient funds
+        if (currentBalance < amount) {
+            console.log('❌ Insufficient funds');
+            return false;
         }
 
+        const newBalance = currentBalance - amount;
+        const newTotalLost = (currentWalletData.totalLost || 0) + amount;
+
+        // Update wallet
         await set(ref(db, `wallets/${uid}`), {
             ...currentWalletData,
             balance: newBalance,
-            totalWon: newTotalWon,
             totalLost: newTotalLost,
-            totalDeposited: newTotalDeposited,
-            totalWithdrawn: newTotalWithdrawn,
-            totalBonus: newTotalBonus,
             lastUpdated: new Date().toISOString()
         });
 
-        // Also update old location for compatibility
+        // Update old location for compatibility
         await set(ref(db, `users/${uid}/wallet/balance`), newBalance);
 
         // Create transaction record
         const transactionsRef = ref(db, `transactions/${uid}`);
         const newTransactionRef = push(transactionsRef);
         await set(newTransactionRef, {
-            type,
+            type: 'loss',
             amount,
             balance: newBalance,
             description,
             timestamp: new Date().toISOString()
         });
 
-        console.log('✅ Flappy Bird wallet updated.', {
-            type,
-            amount,
-            newBalance,
-            totalWon: newTotalWon,
-            totalLost: newTotalLost
-        });
-        
+        console.log('✅ Deduction successful:', { amount, newBalance });
         return true;
 
     } catch (error) {
-        console.error('❌ Error updating Flappy Bird wallet:', error);
+        console.error('❌ Error deducting from Flappy Bird wallet:', error);
         return false;
     }
 }
