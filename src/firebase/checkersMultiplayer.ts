@@ -49,9 +49,7 @@ class CheckersMultiplayer {
   async markLobbyReady(lobbyId: string): Promise<void> {
     if (!lobbyId) return;
     try {
-      await update(ref(db, `lobbies/${lobbyId}`), {
-        status: 'ready'
-      });
+      await update(ref(db, `lobbies/${lobbyId}`), { status: 'ready' });
       console.log(`✅ Lobby ${lobbyId} marked as ready`);
     } catch (error) {
       console.error('Error marking lobby as ready:', error);
@@ -71,24 +69,17 @@ class CheckersMultiplayer {
 
   async setPlayerGameStatus(uid: string, inGame: boolean, lobbyId?: string): Promise<void> {
     try {
-      const updates: any = {
-        inGame: inGame,
-        lastSeen: Date.now()
-      };
-      if (lobbyId) {
-        updates.currentLobby = lobbyId;
-      }
+      const updates: any = { inGame, lastSeen: Date.now() };
+      if (lobbyId) updates.currentLobby = lobbyId;
       await update(ref(db, `online/${uid}`), updates);
     } catch (error) {
       console.error('Error updating game status:', error);
     }
   }
+
   private async awardGamePrize(uid: string, lobbyId: string, lobby: CheckersLobby): Promise<void> {
     try {
-
       const prize = 1.50;
-
-
       const winningsBalanceRef = ref(db, `winningsBalance/${uid}`);
       const snapshot = await get(winningsBalanceRef);
       const currentWinnings = snapshot.exists() ? snapshot.val().balance || 0 : 0;
@@ -101,27 +92,22 @@ class CheckersMultiplayer {
       await set(ref(db, `winnings/${uid}/${lobbyId}`), {
         amount: prize,
         game: 'checkers',
-        lobbyId: lobbyId,
+        lobbyId,
         awardedAt: new Date().toISOString()
       });
 
       console.log(`💰 Awarded $${prize} to ${uid} for checkers win`);
-
     } catch (error) {
       console.error('❌ Error awarding game prize:', error);
     }
   }
+
   async isPlayerOnlineAndInQueue(uid: string): Promise<boolean> {
     try {
-      const onlineRef = ref(db, `online/${uid}`);
-      const snapshot = await get(onlineRef);
-
+      const snapshot = await get(ref(db, `online/${uid}`));
       if (snapshot.exists()) {
         const data = snapshot.val();
-        const isOnline = data.online === true &&
-          data.inQueue === true &&
-          (Date.now() - data.lastSeen < 30000);
-        return isOnline;
+        return data.online === true && data.inQueue === true && (Date.now() - data.lastSeen < 30000);
       }
       return false;
     } catch (error) {
@@ -132,13 +118,10 @@ class CheckersMultiplayer {
 
   async isPlayerOnline(uid: string): Promise<boolean> {
     try {
-      const onlineRef = ref(db, `online/${uid}`);
-      const snapshot = await get(onlineRef);
-
+      const snapshot = await get(ref(db, `online/${uid}`));
       if (snapshot.exists()) {
         const data = snapshot.val();
-        const isOnline = data.online === true && (Date.now() - data.lastSeen < 30000);
-        return isOnline;
+        return data.online === true && (Date.now() - data.lastSeen < 30000);
       }
       return false;
     } catch (error) {
@@ -149,23 +132,20 @@ class CheckersMultiplayer {
 
   async cleanupOfflinePlayers(): Promise<void> {
     try {
-      const onlineRef = ref(db, 'online');
-      const snapshot = await get(onlineRef);
+      const snapshot = await get(ref(db, 'online'));
+      if (!snapshot.exists()) return;
 
-      if (snapshot.exists()) {
-        const now = Date.now();
-        const updates: any = {};
-
-        snapshot.forEach((child) => {
-          const data = child.val();
-          if (now - data.lastSeen > 60000 && !data.inQueue) {
-            updates[`${child.key}/online`] = false;
-          }
-        });
-
-        if (Object.keys(updates).length > 0) {
-          await update(ref(db, 'online'), updates);
+      const now = Date.now();
+      const updates: any = {};
+      snapshot.forEach((child) => {
+        const data = child.val();
+        if (now - data.lastSeen > 60000 && !data.inQueue) {
+          updates[`${child.key}/online`] = false;
         }
+      });
+
+      if (Object.keys(updates).length > 0) {
+        await update(ref(db, 'online'), updates);
       }
     } catch (error) {
       console.error('Error cleaning up offline players:', error);
@@ -175,32 +155,87 @@ class CheckersMultiplayer {
   // =========== ATOMIC MATCHMAKING ===========
 
   /**
-   * Start matchmaking service - runs continuously and uses atomic transactions
+   * Atomically claim a player from the queue.
+   * Returns true ONLY if THIS caller was the one who removed the entry.
+   * Uses a version field to detect if another client already claimed the slot.
+   */
+  private async atomicClaimPlayer(uid: string): Promise<{ claimed: boolean; data: any }> {
+    const playerRef = ref(db, `matchmaking/checkers/${uid}`);
+    try {
+      let capturedData: any = null;
+
+      const result = await runTransaction(playerRef, (currentData) => {
+        if (currentData === null) {
+          // Already claimed by someone else — abort
+          return undefined;
+        }
+        // Mark as claimed so we can detect it
+        capturedData = currentData;
+        return null; // Delete the entry atomically
+      });
+
+      if (result.committed && result.snapshot.val() === null && capturedData !== null) {
+        // WE successfully claimed this player
+        return { claimed: true, data: capturedData };
+      }
+
+      // Either aborted (another client won) or data was already null
+      return { claimed: false, data: null };
+    } catch (error) {
+      console.error('Transaction failed for', uid, error);
+      return { claimed: false, data: null };
+    }
+  }
+
+  /**
+   * Guard against a player being assigned to multiple lobbies simultaneously.
+   * Uses a Firebase transaction on a per-player "in_match" flag.
+   */
+  private async lockPlayerForMatch(uid: string): Promise<boolean> {
+    const lockRef = ref(db, `matching_lock/${uid}`);
+    try {
+      const result = await runTransaction(lockRef, (current) => {
+        if (current !== null) return undefined; // Already locked — abort
+        return { lockedAt: Date.now() };
+      });
+      return result.committed;
+    } catch {
+      return false;
+    }
+  }
+
+  private async unlockPlayerFromMatch(uid: string): Promise<void> {
+    try {
+      await remove(ref(db, `matching_lock/${uid}`));
+    } catch { /* best effort */ }
+  }
+
+  /**
+   * Start matchmaking service — runs continuously and uses atomic transactions.
+   * Multiple clients can call this; only one will hold the lock at a time.
    */
   startMatchmakingService(): void {
     if (this.matchmakingListener) return;
 
     const lockRef = ref(db, 'matchmaking_lock/checkers');
+    const myId = Math.random().toString(36).slice(2);
 
-    // Try to become the matchmaker
     runTransaction(lockRef, (current) => {
       const now = Date.now();
-      // If no lock or lock is stale (>15s old), claim it
       if (!current || (now - current.claimedAt) > 15000) {
-        return { claimedAt: now, claimedBy: Math.random().toString(36).slice(2) };
+        return { claimedAt: now, claimedBy: myId };
       }
-      return undefined; // Someone else has the lock, abort
+      return undefined; // Someone else holds the lock
     }).then((result) => {
       if (!result.committed) {
-        // Someone else is the matchmaker — just watch for our own match
-        console.log('👀 Another client is matchmaking, just listening for matches');
+        console.log('👀 Another client is matchmaking, just listening for our own match');
         return;
       }
 
       console.log('🎯 This client is the matchmaker');
       const myLockValue = result.snapshot.val();
 
-      // Renew the lock every 10s so it doesn't go stale
+      // Renew the lock every 10s
       const renewInterval = setInterval(async () => {
         if (!this.matchmakingListener) { clearInterval(renewInterval); return; }
         await update(lockRef, { claimedAt: Date.now() });
@@ -210,7 +245,7 @@ class CheckersMultiplayer {
       this.matchmakingListener = onValue(queueRef, async (snapshot) => {
         if (!snapshot.exists()) return;
 
-        // Verify we still hold the lock before doing any matching
+        // Verify we still hold the lock
         const lockSnap = await get(lockRef);
         if (!lockSnap.exists() || lockSnap.val().claimedBy !== myLockValue.claimedBy) {
           console.log('⚠️ Lost matchmaking lock, stopping');
@@ -224,54 +259,68 @@ class CheckersMultiplayer {
         if (players.length < 2) return;
 
         const now = Date.now();
-        const online = players.filter(p => p.uid && (now - (p.joinedAt || 0)) < 120000);
-        if (online.length < 2) return;
+        // Only consider players who joined recently and are still active
+        const eligible = players.filter(
+          (p) => p.uid && (now - (p.joinedAt || 0)) < 120000
+        );
+        if (eligible.length < 2) return;
 
-        online.sort((a, b) => a.joinedAt - b.joinedAt);
+        // Sort oldest-first for fairness
+        eligible.sort((a, b) => a.joinedAt - b.joinedAt);
 
-        for (let i = 0; i + 1 < online.length; i += 2) {
-          const p1 = online[i];
-          const p2 = online[i + 1];
-          if (p1.uid === p2.uid) continue;
+        // Process one pair per tick to keep things clean
+        const p1 = eligible[0];
+        const p2 = eligible[1];
+        if (p1.uid === p2.uid) return;
 
-          const claimed1 = await this.atomicClaimPlayer(ref(db, `matchmaking/checkers/${p1.uid}`));
-          if (!claimed1) continue;
+        // Lock both players at the "match assignment" level first
+        // to prevent two concurrent matchmaker instances from double-assigning
+        const locked1 = await this.lockPlayerForMatch(p1.uid);
+        if (!locked1) {
+          console.log(`⚠️ ${p1.uid} already being matched, skipping`);
+          return;
+        }
 
-          const claimed2 = await this.atomicClaimPlayer(ref(db, `matchmaking/checkers/${p2.uid}`));
-          if (!claimed2) {
-            await set(ref(db, `matchmaking/checkers/${p1.uid}`), p1); // roll back
-            continue;
-          }
+        const locked2 = await this.lockPlayerForMatch(p2.uid);
+        if (!locked2) {
+          console.log(`⚠️ ${p2.uid} already being matched, skipping`);
+          await this.unlockPlayerFromMatch(p1.uid);
+          return;
+        }
 
-          console.log(`✅ Matched: ${p1.username} vs ${p2.username}`);
-          try {
-            await this.createLobby(p1.uid, p2.uid, p1, p2);
-          } catch (err) {
-            console.error('Failed to create lobby, re-queuing:', err);
-            await set(ref(db, `matchmaking/checkers/${p1.uid}`), p1);
-            await set(ref(db, `matchmaking/checkers/${p2.uid}`), p2);
-          }
+        // Now atomically claim both from the queue
+        const claim1 = await this.atomicClaimPlayer(p1.uid);
+        if (!claim1.claimed) {
+          console.log(`⚠️ Failed to claim ${p1.uid} from queue (already taken)`);
+          await this.unlockPlayerFromMatch(p1.uid);
+          await this.unlockPlayerFromMatch(p2.uid);
+          return;
+        }
+
+        const claim2 = await this.atomicClaimPlayer(p2.uid);
+        if (!claim2.claimed) {
+          console.log(`⚠️ Failed to claim ${p2.uid} from queue (already taken)`);
+          // Roll back p1
+          await set(ref(db, `matchmaking/checkers/${p1.uid}`), claim1.data);
+          await this.unlockPlayerFromMatch(p1.uid);
+          await this.unlockPlayerFromMatch(p2.uid);
+          return;
+        }
+
+        console.log(`✅ Matched: ${p1.username} vs ${p2.username}`);
+        try {
+          await this.createLobby(p1.uid, p2.uid, claim1.data, claim2.data);
+        } catch (err) {
+          console.error('Failed to create lobby, re-queuing both players:', err);
+          await set(ref(db, `matchmaking/checkers/${p1.uid}`), claim1.data);
+          await set(ref(db, `matchmaking/checkers/${p2.uid}`), claim2.data);
+        } finally {
+          // Always release the match-level locks
+          await this.unlockPlayerFromMatch(p1.uid);
+          await this.unlockPlayerFromMatch(p2.uid);
         }
       });
     }).catch(console.error);
-  }
-
-  /**
-   * Atomically claim a player from the queue
-   */
-  private async atomicClaimPlayer(playerRef: any): Promise<boolean> {
-    try {
-      const result = await runTransaction(playerRef, (currentData) => {
-        if (currentData === null) return undefined; // ABORT — already claimed
-        return null; // Claim it
-      });
-      // committed=true AND snapshot is null means WE set it to null (we won the race)
-      // committed=false means another client aborted us
-      return result.committed && result.snapshot.val() === null;
-    } catch (error) {
-      console.error('Transaction failed:', error);
-      return false;
-    }
   }
 
   stopMatchmakingService(): void {
@@ -281,6 +330,11 @@ class CheckersMultiplayer {
     }
   }
 
+  /**
+   * Join the matchmaking queue.
+   * NOTE: The $1 fee is charged in the scene BEFORE calling this.
+   * This method does NOT charge any fee — it only manages queue state.
+   */
   async joinQueue(uid: string, username: string, displayName: string, avatar: string = 'default'): Promise<void> {
     if (!uid) {
       console.error('❌ Cannot join queue: uid is undefined');
@@ -309,25 +363,20 @@ class CheckersMultiplayer {
   async leaveQueue(uid: string): Promise<void> {
     if (!uid) return;
     console.log(`🚪 Player ${uid} left checkers queue`);
-
     await remove(ref(db, `matchmaking/checkers/${uid}`));
+    await remove(ref(db, `matching_lock/${uid}`));
     await this.setPlayerQueueStatus(uid, false);
   }
 
   private async cleanupPlayerLobbies(uid: string): Promise<void> {
     try {
-      const lobbiesRef = ref(db, 'lobbies');
-      const snapshot = await get(lobbiesRef);
-
+      const snapshot = await get(ref(db, 'lobbies'));
       if (!snapshot.exists()) return;
 
       const lobbies = snapshot.val();
-
       for (const [lobbyId, lobbyData] of Object.entries(lobbies)) {
         const lobby = lobbyData as any;
-
         if (lobby.playerIds && lobby.playerIds.includes(uid)) {
-          // Only clean up waiting or dead lobbies
           if ((lobby.status === 'waiting' || lobby.status === 'dead') && lobby.playerIds.length === 1) {
             console.log(`🗑️ Cleaning up old lobby for player: ${lobbyId}`);
             await remove(ref(db, `lobbies/${lobbyId}`));
@@ -348,16 +397,12 @@ class CheckersMultiplayer {
     player1Data: any,
     player2Data: any
   ): Promise<string> {
-
-
-
-
     const lobbyId = `checkers_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
     const lobby: CheckersLobby = {
       id: lobbyId,
       gameId: 'checkers',
-      status: 'waiting', // Only 'waiting' lobbies can be joined
+      status: 'waiting',
       players: {
         [player1Uid]: {
           uid: player1Uid,
@@ -384,19 +429,18 @@ class CheckersMultiplayer {
     };
 
     try {
-      console.log('📝 Attempting to create checkers lobby:', lobbyId);
+      console.log('📝 Creating checkers lobby:', lobbyId);
       await set(ref(db, `lobbies/${lobbyId}`), lobby);
-      console.log('✅ Lobby written to Firebase successfully');
+      console.log('✅ Lobby written to Firebase');
 
-      // Create match notifications for BOTH players
+      // Notify both players
       await set(ref(db, `matches/${player1Uid}`), {
-        lobbyId: lobbyId,
+        lobbyId,
         gameId: 'checkers',
         timestamp: Date.now()
       });
-
       await set(ref(db, `matches/${player2Uid}`), {
-        lobbyId: lobbyId,
+        lobbyId,
         gameId: 'checkers',
         timestamp: Date.now()
       });
@@ -414,18 +458,11 @@ class CheckersMultiplayer {
       console.error('❌ getLobby called with no lobbyId');
       return null;
     }
-
     try {
-      const lobbyRef = ref(db, `lobbies/${lobbyId}`);
-      const snapshot = await get(lobbyRef);
-
-      if (snapshot.exists()) {
-        console.log('✅ Lobby found:', lobbyId);
-        return snapshot.val() as CheckersLobby;
-      } else {
-        console.log('❌ Lobby not found in Firebase:', lobbyId);
-        return null;
-      }
+      const snapshot = await get(ref(db, `lobbies/${lobbyId}`));
+      if (snapshot.exists()) return snapshot.val() as CheckersLobby;
+      console.log('❌ Lobby not found:', lobbyId);
+      return null;
     } catch (error) {
       console.error('❌ Error getting lobby:', error);
       return null;
@@ -434,55 +471,36 @@ class CheckersMultiplayer {
 
   subscribeToLobby(lobbyId: string, callback: (lobby: CheckersLobby | null) => void): () => void {
     if (!lobbyId) return () => { };
-
     const lobbyRef = ref(db, `lobbies/${lobbyId}`);
-
-    const unsubscribe = onValue(lobbyRef, (snapshot) => {
-      if (snapshot.exists()) {
-        callback(snapshot.val() as CheckersLobby);
-      } else {
-        callback(null);
-      }
+    return onValue(lobbyRef, (snapshot) => {
+      callback(snapshot.exists() ? (snapshot.val() as CheckersLobby) : null);
     });
-
-    return unsubscribe;
   }
 
   async setPlayerReady(lobbyId: string, uid: string, isReady: boolean): Promise<void> {
     if (!lobbyId || !uid) return;
-
-    await update(ref(db, `lobbies/${lobbyId}/players/${uid}`), {
-      isReady
-    });
+    await update(ref(db, `lobbies/${lobbyId}/players/${uid}`), { isReady });
 
     const lobby = await this.getLobby(lobbyId);
     if (lobby && lobby.status === 'waiting') {
-      const allReady = lobby.playerIds.every(id => lobby.players[id]?.isReady);
-
-      if (allReady) {
-        await this.startGame(lobbyId);
-      }
+      const allReady = lobby.playerIds.every((id) => lobby.players[id]?.isReady);
+      if (allReady) await this.startGame(lobbyId);
     }
   }
 
   async startGame(lobbyId: string): Promise<void> {
     if (!lobbyId) return;
-
     await update(ref(db, `lobbies/${lobbyId}`), {
       status: 'playing',
       startedAt: Date.now()
     });
-
     console.log(`🎮 Checkers game started in lobby: ${lobbyId}`);
   }
 
   // =========== DISPLACED PLAYER HANDLING ===========
 
   async setDisplaced(uid: string, lobbyId: string): Promise<void> {
-    await set(ref(db, `displaced/${uid}`), {
-      lobbyId: lobbyId,
-      timestamp: Date.now()
-    });
+    await set(ref(db, `displaced/${uid}`), { lobbyId, timestamp: Date.now() });
   }
 
   async clearDisplaced(uid: string): Promise<void> {
@@ -493,22 +511,16 @@ class CheckersMultiplayer {
     const lobby = await this.getLobby(lobbyId);
     if (!lobby) return;
 
-    const opponentUid = lobby.playerIds.find(id => id !== cancellerUid);
-
+    const opponentUid = lobby.playerIds.find((id) => id !== cancellerUid);
     if (opponentUid) {
       await this.setDisplaced(opponentUid, lobbyId);
       console.log(`📝 Opponent ${opponentUid} marked as displaced`);
     }
 
-    // Mark lobby as dead
-    await update(ref(db, `lobbies/${lobbyId}`), {
-      status: 'dead'
-    });
-
+    await update(ref(db, `lobbies/${lobbyId}`), { status: 'dead' });
     await remove(ref(db, `gameStates/${lobbyId}`));
 
-    const queueRef = ref(db, `matchmaking/checkers/${cancellerUid}`);
-    const queueSnapshot = await get(queueRef);
+    const queueSnapshot = await get(ref(db, `matchmaking/checkers/${cancellerUid}`));
     if (queueSnapshot.exists()) {
       await this.leaveQueue(cancellerUid);
     }
@@ -525,16 +537,10 @@ class CheckersMultiplayer {
       winner: winnerUid
     });
 
-
-
-
     console.log(`🏆 Checkers game finished, winner: ${winnerUid}`);
 
-
     const lobby = await this.getLobby(lobbyId);
-    if (lobby) {
-      await this.awardGamePrize(winnerUid, lobbyId, lobby);
-    }
+    if (lobby) await this.awardGamePrize(winnerUid, lobbyId, lobby);
 
     setTimeout(async () => {
       await remove(ref(db, `lobbies/${lobbyId}`));
@@ -543,31 +549,20 @@ class CheckersMultiplayer {
 
   async playerLeave(lobbyId: string, uid: string): Promise<void> {
     if (!lobbyId || !uid) return;
-
     const lobby = await this.getLobby(lobbyId);
+    if (!lobby) return;
 
-    if (lobby) {
-      const otherPlayer = lobby.playerIds.find(id => id !== uid);
-
-      if (otherPlayer && lobby.status === 'playing') {
-        await this.endGame(lobbyId, otherPlayer);
-      } else {
-        // Mark as dead so other player gets refunded
-        await update(ref(db, `lobbies/${lobbyId}`), {
-          status: 'dead'
-        });
-      }
+    const otherPlayer = lobby.playerIds.find((id) => id !== uid);
+    if (otherPlayer && lobby.status === 'playing') {
+      await this.endGame(lobbyId, otherPlayer);
+    } else {
+      await update(ref(db, `lobbies/${lobbyId}`), { status: 'dead' });
     }
   }
 
   cleanup(lobbyId: string, ...unsubscribeFunctions: (() => void)[]) {
-    unsubscribeFunctions.forEach(unsubscribe => {
-      if (unsubscribe) unsubscribe();
-    });
-
-    if (lobbyId) {
-      off(ref(db, `lobbies/${lobbyId}`));
-    }
+    unsubscribeFunctions.forEach((fn) => { if (fn) fn(); });
+    if (lobbyId) off(ref(db, `lobbies/${lobbyId}`));
   }
 }
 
