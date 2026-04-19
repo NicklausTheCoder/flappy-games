@@ -314,7 +314,8 @@ export class CookieScene extends Phaser.Scene {
                     const userData = this.createUserData(
                         decrypted.username,
                         decrypted.rememberMe || false,
-                        decrypted.uid  // Pass the UID here!
+                        decrypted.uid,
+                        decrypted.sessionId  // Preserve sessionId from login
                     );
 
                     // Save to storage for future visits
@@ -333,12 +334,12 @@ export class CookieScene extends Phaser.Scene {
         return null;
     }
 
-    private createUserData(username: string, rememberMe: boolean, existingUid?: string): any {
+private createUserData(username: string, rememberMe: boolean, existingUid?: string, existingSessionId?: string): any {
         return {
             username: username,
-            uid: existingUid || `temp_${Date.now()}`, // Use existing UID if provided
+            uid: existingUid || `temp_${Date.now()}`,
             loginTime: Date.now(),
-            sessionId: Math.random().toString(36).substring(2, 15),
+            sessionId: existingSessionId || Math.random().toString(36).substring(2, 15),
             rememberMe: rememberMe,
             createdAt: Date.now(),
             lastActivity: Date.now(),
@@ -483,26 +484,7 @@ export class CookieScene extends Phaser.Scene {
             window.location.href = `https://wintapgames.com/games`;
         });
 
-        // Demo login button
-        const demoBtn = this.add.text(180, 360, '👤 DEMO LOGIN', {
-            fontSize: '16px',
-            color: '#ffffff',
-            backgroundColor: '#2196F3',
-            padding: { x: 20, y: 10 }
-        })
-            .setOrigin(0.5)
-            .setInteractive({ useHandCursor: true });
 
-        demoBtn.on('pointerdown', () => {
-            const demoData = this.createUserData(`demo_${gameId}`, false);
-            this.saveUserToStorage(demoData, false);
-            this.registry.set('username', demoData.username);
-            this.registry.set('userData', demoData);
-            this.registry.set('isAuthenticated', true);
-
-            // Route to game loader
-            this.routeToGameLoader(gameId, demoData.username);
-        });
 
         // Session info
         this.add.text(180, 440, '⏱️ Session: 30 minutes\n💤 Idle timeout: 15 minutes\n💾 Remember me: 7 days', {
@@ -518,10 +500,11 @@ export class CookieScene extends Phaser.Scene {
 
             if (userData.username) {
                 // Pass the existing UID to createUserData
-                const formattedUser = this.createUserData(
+               const formattedUser = this.createUserData(
                     userData.username,
                     userData.rememberMe || false,
-                    userData.uid  // Pass the UID here!
+                    userData.uid,
+                    userData.sessionId  // Preserve existing sessionId
                 );
 
                 // Add any additional fields
@@ -558,18 +541,42 @@ export class CookieScene extends Phaser.Scene {
                 // Different sessionId = different device/browser
                 const timeSinceLock = Date.now() - (existing.lockedAt || 0);
                 // Give 60 seconds grace in case of page refresh creating new sessionId
-                if (timeSinceLock < 60000) {
+               if (timeSinceLock < 10000) {
                     console.warn('🚫 Duplicate session detected for uid:', uid);
                     return true; // Block this login
                 }
             }
 
             // No existing session or it's stale — write ours
-            await set(sessionRef, {
-                sessionId,
-                lockedAt: Date.now(),
-                userAgent: navigator.userAgent
+       // Use a transaction so two devices can't both write at the same time
+            const { runTransaction } = await import('firebase/database');
+            let wasBlocked = false;
+
+            await runTransaction(sessionRef, (current) => {
+                if (current !== null) {
+                    const timeSinceLock = Date.now() - (current.lockedAt || 0);
+                    if (current.sessionId !== sessionId && timeSinceLock < 10000) {
+                        wasBlocked = true;
+                        return; // Abort — don't overwrite
+                    }
+                }
+                // Either no session, same session, or stale — claim it
+                return {
+                    sessionId,
+                    lockedAt: Date.now(),
+                    userAgent: navigator.userAgent
+                };
             });
+
+            if (wasBlocked) {
+                console.warn('🚫 Transaction blocked duplicate session for uid:', uid);
+                return true;
+            }
+
+            // Auto-remove session lock when this tab closes
+            onDisconnect(sessionRef).remove();
+
+            return false;
 
             // Auto-remove session lock when this tab closes
             onDisconnect(sessionRef).remove();
