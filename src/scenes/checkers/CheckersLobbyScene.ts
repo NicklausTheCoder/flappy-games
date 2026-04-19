@@ -190,21 +190,20 @@ export class CheckersLobbyScene extends Phaser.Scene {
     if (!this.scene || !this.scene.isActive()) return;
 
     if (!lobby) {
-      console.log('⏳ Waiting for lobby data...');
       this.statusText.setText('⏳ Loading lobby...');
       return;
     }
 
-    // Check if lobby is dead (opponent left)
+    // FIXED: only refund if game never actually started
     if (lobby.status === 'dead' && !this.gameStarted && !this.hasRefunded) {
-      console.log('💀 Lobby is dead - opponent left, refunding player...');
       this.handleOpponentLeft();
       return;
     }
 
-    // Check if game is starting (status changed to 'playing')
+    // FIXED: ignore dead lobbies if game already started (handled in game scene)
+    if (lobby.status === 'dead' && this.gameStarted) return;
+
     if (lobby.status === 'playing' && !this.gameStarted) {
-      console.log('🎮 Game is starting!');
       this.startGame();
       return;
     }
@@ -412,9 +411,14 @@ export class CheckersLobbyScene extends Phaser.Scene {
           this.countdownTimer.destroy();
           this.countdownText.setVisible(false);
 
-          if (this.lobby && (this.lobby.status === 'waiting' || this.lobby.status === 'ready') && !this.gameStarted) {
-            // Start the game - this changes status to 'playing'
-            checkersMultiplayer.startGame(this.lobbyId);
+          // Only ONE client should write this — use the host (first playerID)
+          if (this.lobby && !this.gameStarted) {
+            const isHost = this.lobby.playerIds[0] === this.uid;
+            if (isHost && (this.lobby.status === 'waiting' || this.lobby.status === 'ready')) {
+              checkersMultiplayer.startGame(this.lobbyId);
+              // Don't call startGame() locally — wait for Firebase to 
+              // broadcast status: 'playing' which triggers startGame() for both
+            }
           }
         }
       },
@@ -428,23 +432,18 @@ export class CheckersLobbyScene extends Phaser.Scene {
 
     this.statusText.setText('👋 Leaving lobby...');
 
-    // CRITICAL: Reset queue status before leaving
     await checkersMultiplayer.setPlayerQueueStatus(this.uid, false);
     await checkersMultiplayer.setPlayerOnline(this.uid, false);
 
-    // Mark lobby as dead
-    await update(ref(db, `lobbies/${this.lobbyId}`), {
-      status: 'dead'
-    });
-
-    await checkersMultiplayer.playerLeave(this.lobbyId, this.uid);
+    // Use cancelFromLobby instead — it marks dead AND notifies opponent
+    // without triggering endGame/prize logic
+    await checkersMultiplayer.cancelFromLobby(this.lobbyId, this.uid);
 
     this.scene.start('CheckersStartScene', {
       username: this.username,
       uid: this.uid
     });
   }
-
 
 
   private addBackgroundEffects() {

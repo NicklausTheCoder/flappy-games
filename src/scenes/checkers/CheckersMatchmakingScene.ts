@@ -229,6 +229,13 @@ export class CheckersMatchmakingScene extends Phaser.Scene {
         });
 
         console.log('✅ create() complete — waiting for match...');
+        this.time.delayedCall(20000, () => {
+            if (!this.matchFound && !this.cancelled) {
+                console.log('🔧 Forcing matchmaking service restart...');
+                checkersMultiplayer.stopMatchmakingService();
+                checkersMultiplayer.startMatchmakingService();
+            }
+        });
     }
 
     /**

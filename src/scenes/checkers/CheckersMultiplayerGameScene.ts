@@ -202,7 +202,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             this.storeLog('⏰ Inactivity timer started');
         }, 2000); // Start after 2 seconds to let game fully load
 
-        this.storeLog('✅ Game scene ready');
+      this.storeLog('✅ Game scene ready');
+        setTimeout(() => { this.gameFullyLoaded = true; }, 8000);
     }
 
     private initializeArrays() {
@@ -252,7 +253,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
                             // Check for disconnect - but with longer timeout (30 seconds)
                             const timeSinceOpponentHeartbeat = Date.now() - this.opponentLastSeen;
-                            if (timeSinceOpponentHeartbeat > 30000 && !this.gameWinner) {
+                            if (timeSinceOpponentHeartbeat > 15000 && !this.gameWinner) {
                                 this.storeLog(`⚠️ Opponent disconnected! Last seen: ${timeSinceOpponentHeartbeat}ms ago`);
                                 await this.handleOpponentDisconnect();
                             }
@@ -679,17 +680,23 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
         const gameStateRef = ref(db, `games/checkers/${this.lobbyId}`);
 
-        setTimeout(() => {
+       setTimeout(() => {
             if (this.opponent?.uid && this.gameActive) {
                 const opponentHeartbeatRef = ref(db, `game_heartbeats/${this.lobbyId}/${this.opponent.uid}`);
+                let firstSnapshot = true;
                 onValue(opponentHeartbeatRef, (snapshot) => {
+                    // Skip the first snapshot — it fires immediately on subscribe
+                    if (firstSnapshot) {
+                        firstSnapshot = false;
+                        return;
+                    }
                     if (!snapshot.exists() && this.gameActive && !this.gameWinner) {
                         this.storeLog('⚠️ Opponent heartbeat stopped - disconnecting');
                         this.handleOpponentDisconnect();
                     }
                 });
             }
-        }, 5000); // Wait 5 seconds before monitoring
+        }, 5000);
 
 
         this.gameStateUnsubscribe = onValue(gameStateRef, async (snapshot) => {
@@ -716,7 +723,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
             if (!snapshot.exists() || !this.gameActive) return;
 
-       
+
 
             // Check if game has ended
             if (state.winner && state.winner !== this.gameWinner) {
@@ -1541,15 +1548,24 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             // If heartbeat exists and is recent (within 10 seconds), ignore
             if (snapshot.exists()) {
                 const data = snapshot.val();
-                if (data.lastHeartbeat && (Date.now() - data.lastHeartbeat) < 10000) {
-                    this.storeLog('⚠️ Opponent still active - ignoring disconnect');
-                    return;
+                if (snapshot.exists()) {
+                    const data = snapshot.val();
+                    if (data.lastHeartbeat && (Date.now() - data.lastHeartbeat) < 15000) {
+                        this.storeLog('⚠️ Opponent still active - ignoring disconnect');
+                        return;
+                    }
                 }
             }
         }
 
         // Proceed with disconnect win
+        // Proceed with disconnect win
         this.gameActive = false;
+        await update(ref(db, `lobbies/${this.lobbyId}`), {
+            status: 'finished',
+            winner: this.uid,
+            finishedAt: Date.now()
+        });
         await checkersMultiplayer.endGame(this.lobbyId, this.uid);
         this.showGameOver('OPPONENT DISCONNECTED - YOU WIN!');
     }
@@ -1640,6 +1656,11 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         const confirmed = confirm('Are you sure you want to resign?');
         if (!confirmed) return;
         this.gameActive = false;
+        await update(ref(db, `lobbies/${this.lobbyId}`), {
+            status: 'finished',
+            winner: this.opponent?.uid || '',
+            finishedAt: Date.now()
+        });
         await checkersMultiplayer.endGame(this.lobbyId, this.opponent?.uid || '');
         this.showGameOver('You resigned');
     }
@@ -2117,7 +2138,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         if (this.gameStateUnsubscribe) this.gameStateUnsubscribe();
         off(ref(db, `games/checkers/${this.lobbyId}`));
 
-       
+
 
         // ADD THESE CLEANUPS
         if (this.heartbeatInterval) {

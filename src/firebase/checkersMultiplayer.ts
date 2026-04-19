@@ -222,13 +222,16 @@ class CheckersMultiplayer {
 
     runTransaction(lockRef, (current) => {
       const now = Date.now();
-      if (!current || (now - current.claimedAt) > 15000) {
+     if (!current || (now - current.claimedAt) > 8000) {
         return { claimedAt: now, claimedBy: myId };
       }
       return undefined; // Someone else holds the lock
     }).then((result) => {
-      if (!result.committed) {
+       if (!result.committed) {
         console.log('👀 Another client is matchmaking, just listening for our own match');
+        setTimeout(() => {
+          this.startMatchmakingService();
+        }, 9000);
         return;
       }
 
@@ -239,7 +242,7 @@ class CheckersMultiplayer {
       const renewInterval = setInterval(async () => {
         if (!this.matchmakingListener) { clearInterval(renewInterval); return; }
         await update(lockRef, { claimedAt: Date.now() });
-      }, 10000);
+     }, 5000);
 
       const queueRef = ref(db, 'matchmaking/checkers');
       this.matchmakingListener = onValue(queueRef, async (snapshot) => {
@@ -260,8 +263,8 @@ class CheckersMultiplayer {
 
         const now = Date.now();
         // Only consider players who joined recently and are still active
-        const eligible = players.filter(
-          (p) => p.uid && (now - (p.joinedAt || 0)) < 120000
+       const eligible = players.filter(
+          (p) => p.uid && (!p.joinedAt || (now - p.joinedAt) < 180000)
         );
         if (eligible.length < 2) return;
 

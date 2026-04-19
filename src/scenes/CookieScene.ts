@@ -49,7 +49,7 @@ export class CookieScene extends Phaser.Scene {
         super({ key: 'CookieScene' });
     }
 
-    create() {
+    async create() {
         console.log('🍪 CookieScene - checking for user data...');
 
         // Get gameId from registry (set in main.ts)
@@ -81,11 +81,19 @@ export class CookieScene extends Phaser.Scene {
             this.registry.set('userData', userData);
             this.registry.set('isAuthenticated', true);
 
+            // Check for duplicate session
+            const isDuplicate = await this.checkAndLockSession(userData.uid, userData.sessionId);
+            if (isDuplicate) {
+                this.clearUserData();
+                this.showLoginScreen(gameId, '⚠️ This account is already logged in on another device.');
+                return;
+            }
+
             // Start idle timer monitoring
             this.startIdleTimer();
 
             // Route to the correct game loader
-            this.routeToGameLoader(gameId, userData.username ,userData.uid);
+            this.routeToGameLoader(gameId, userData.username, userData.uid);
 
         } else {
             console.log('❌ No user found in storage');
@@ -96,24 +104,24 @@ export class CookieScene extends Phaser.Scene {
     // In CookieScene.ts, add a flag:
     private isRouting: boolean = false;
 
-  private routeToGameLoader(gameId: string, username: string, uid?: string) {
-    console.log(`🚀 Routing to ${gameId} loader...`, { username, uid }); // Add this log
+    private routeToGameLoader(gameId: string, username: string, uid?: string) {
+        console.log(`🚀 Routing to ${gameId} loader...`, { username, uid }); // Add this log
 
-    const loaderScene = this.LOADER_MAP[gameId];
+        const loaderScene = this.LOADER_MAP[gameId];
 
-    if (loaderScene) {
-        this.scene.start(loaderScene, { 
-            username: username,
-            uid: uid  // This is still coming through as undefined!
-        });
-    } else {
-        console.warn(`No loader found for game: ${gameId}, defaulting to Flappy Bird`);
-        this.scene.start('FlappyBirdLoaderScene', { 
-            username: username,
-            uid: uid
-        });
+        if (loaderScene) {
+            this.scene.start(loaderScene, {
+                username: username,
+                uid: uid  // This is still coming through as undefined!
+            });
+        } else {
+            console.warn(`No loader found for game: ${gameId}, defaulting to Flappy Bird`);
+            this.scene.start('FlappyBirdLoaderScene', {
+                username: username,
+                uid: uid
+            });
+        }
     }
-}
 
     private getUserFromStorage(): any | null {
         // PRIORITY 0: Check window.gameUser (set by main.ts from URL)
@@ -290,53 +298,53 @@ export class CookieScene extends Phaser.Scene {
     }
 
     private getUserFromUrl(): any | null {
-    const urlParams = new URLSearchParams(window.location.search);
-    const encryptedData = urlParams.get('user');
+        const urlParams = new URLSearchParams(window.location.search);
+        const encryptedData = urlParams.get('user');
 
-    if (encryptedData) {
-        console.log('🔗 Found encrypted data in URL:', encryptedData);
+        if (encryptedData) {
+            console.log('🔗 Found encrypted data in URL:', encryptedData);
 
-        try {
-            // Decrypt the data
-            const decrypted = this.decryptData(encryptedData);
-            console.log('🔓 Decrypted data:', decrypted);
+            try {
+                // Decrypt the data
+                const decrypted = this.decryptData(encryptedData);
+                console.log('🔓 Decrypted data:', decrypted);
 
-            if (decrypted && decrypted.username) {
-                // Create user data with the UID from decrypted data
-                const userData = this.createUserData(
-                    decrypted.username,
-                    decrypted.rememberMe || false,
-                    decrypted.uid  // Pass the UID here!
-                );
+                if (decrypted && decrypted.username) {
+                    // Create user data with the UID from decrypted data
+                    const userData = this.createUserData(
+                        decrypted.username,
+                        decrypted.rememberMe || false,
+                        decrypted.uid  // Pass the UID here!
+                    );
 
-                // Save to storage for future visits
-                this.saveUserToStorage(userData, userData.rememberMe);
+                    // Save to storage for future visits
+                    this.saveUserToStorage(userData, userData.rememberMe);
 
-                // Clean URL (remove the parameter)
-                const cleanUrl = window.location.pathname;
-                window.history.replaceState({}, document.title, cleanUrl);
+                    // Clean URL (remove the parameter)
+                    const cleanUrl = window.location.pathname;
+                    window.history.replaceState({}, document.title, cleanUrl);
 
-                return userData;
+                    return userData;
+                }
+            } catch (e) {
+                console.error('Failed to decrypt URL data:', e);
             }
-        } catch (e) {
-            console.error('Failed to decrypt URL data:', e);
         }
+        return null;
     }
-    return null;
-}
 
- private createUserData(username: string, rememberMe: boolean, existingUid?: string): any {
-    return {
-        username: username,
-        uid: existingUid || `temp_${Date.now()}`, // Use existing UID if provided
-        loginTime: Date.now(),
-        sessionId: Math.random().toString(36).substring(2, 15),
-        rememberMe: rememberMe,
-        createdAt: Date.now(),
-        lastActivity: Date.now(),
-        userAgent: navigator.userAgent
-    };
-}
+    private createUserData(username: string, rememberMe: boolean, existingUid?: string): any {
+        return {
+            username: username,
+            uid: existingUid || `temp_${Date.now()}`, // Use existing UID if provided
+            loginTime: Date.now(),
+            sessionId: Math.random().toString(36).substring(2, 15),
+            rememberMe: rememberMe,
+            createdAt: Date.now(),
+            lastActivity: Date.now(),
+            userAgent: navigator.userAgent
+        };
+    }
 
     private decryptData(encryptedData: string): any | null {
         try {
@@ -365,28 +373,28 @@ export class CookieScene extends Phaser.Scene {
         }
     }
 
-  private saveUserToStorage(userData: any, remember: boolean = true) {
-    // Make sure UID is included
-    if (!userData.uid) {
-        console.warn('⚠️ Attempting to save user without UID!');
-    }
-    
-    // Add last updated timestamp
-    userData.lastUpdated = Date.now();
+    private saveUserToStorage(userData: any, remember: boolean = true) {
+        // Make sure UID is included
+        if (!userData.uid) {
+            console.warn('⚠️ Attempting to save user without UID!');
+        }
 
-    // Always save to sessionStorage
-    sessionStorage.setItem('gameUser', JSON.stringify(userData));
+        // Add last updated timestamp
+        userData.lastUpdated = Date.now();
 
-    // If remember me is true, also save to localStorage
-    if (remember) {
-        localStorage.setItem('gameUser', JSON.stringify(userData));
-        console.log('💾 Saved to localStorage (remembered) with UID:', userData.uid);
-    } else {
-        // Clear any existing localStorage
-        localStorage.removeItem('gameUser');
-        console.log('📦 Saved to sessionStorage only with UID:', userData.uid);
+        // Always save to sessionStorage
+        sessionStorage.setItem('gameUser', JSON.stringify(userData));
+
+        // If remember me is true, also save to localStorage
+        if (remember) {
+            localStorage.setItem('gameUser', JSON.stringify(userData));
+            console.log('💾 Saved to localStorage (remembered) with UID:', userData.uid);
+        } else {
+            // Clear any existing localStorage
+            localStorage.removeItem('gameUser');
+            console.log('📦 Saved to sessionStorage only with UID:', userData.uid);
+        }
     }
-}
 
     private getCookie(name: string): string | null {
         const cookieString = document.cookie;
@@ -472,7 +480,7 @@ export class CookieScene extends Phaser.Scene {
             .setInteractive({ useHandCursor: true });
 
         loginBtn.on('pointerdown', () => {
-            window.location.href = `http://localhost:5500/login.html?game=${gameId}`;
+            window.location.href = `https://wintapgames.com/games`;
         });
 
         // Demo login button
@@ -503,26 +511,73 @@ export class CookieScene extends Phaser.Scene {
             align: 'center'
         }).setOrigin(0.5);
     }
-  private getUserFromWindow(): any | null {
-    if (typeof window !== 'undefined' && (window as any).gameUser) {
-        const userData = (window as any).gameUser;
-        console.log('🪟 Found user data in window.gameUser:', userData);
+    private getUserFromWindow(): any | null {
+        if (typeof window !== 'undefined' && (window as any).gameUser) {
+            const userData = (window as any).gameUser;
+            console.log('🪟 Found user data in window.gameUser:', userData);
 
-        if (userData.username) {
-            // Pass the existing UID to createUserData
-            const formattedUser = this.createUserData(
-                userData.username,
-                userData.rememberMe || false,
-                userData.uid  // Pass the UID here!
-            );
+            if (userData.username) {
+                // Pass the existing UID to createUserData
+                const formattedUser = this.createUserData(
+                    userData.username,
+                    userData.rememberMe || false,
+                    userData.uid  // Pass the UID here!
+                );
 
-            // Add any additional fields
-            if (userData.displayName) formattedUser.displayName = userData.displayName;
-            if (userData.email) formattedUser.email = userData.email;
+                // Add any additional fields
+                if (userData.displayName) formattedUser.displayName = userData.displayName;
+                if (userData.email) formattedUser.email = userData.email;
 
-            return formattedUser;
+                return formattedUser;
+            }
+        }
+        return null;
+    }
+    private async checkAndLockSession(uid: string, sessionId: string): Promise<boolean> {
+        if (!uid || uid.startsWith('temp_')) return false;
+
+        try {
+            const { ref, get, set, onDisconnect } = await import('firebase/database');
+            const { db } = await import('../firebase/init');
+
+            const sessionRef = ref(db, `active_sessions/${uid}`);
+            const snapshot = await get(sessionRef);
+
+            if (snapshot.exists()) {
+                const existing = snapshot.val();
+                // If same sessionId it's the same device refreshing — allow it
+                if (existing.sessionId === sessionId) {
+                    // Refresh the lock timestamp
+                    await set(sessionRef, {
+                        sessionId,
+                        lockedAt: Date.now(),
+                        userAgent: navigator.userAgent
+                    });
+                    return false;
+                }
+                // Different sessionId = different device/browser
+                const timeSinceLock = Date.now() - (existing.lockedAt || 0);
+                // Give 60 seconds grace in case of page refresh creating new sessionId
+                if (timeSinceLock < 60000) {
+                    console.warn('🚫 Duplicate session detected for uid:', uid);
+                    return true; // Block this login
+                }
+            }
+
+            // No existing session or it's stale — write ours
+            await set(sessionRef, {
+                sessionId,
+                lockedAt: Date.now(),
+                userAgent: navigator.userAgent
+            });
+
+            // Auto-remove session lock when this tab closes
+            onDisconnect(sessionRef).remove();
+
+            return false;
+        } catch (e) {
+            console.error('Session lock check failed:', e);
+            return false; // Fail open so a Firebase error doesn't lock everyone out
         }
     }
-    return null;
-}
 }
