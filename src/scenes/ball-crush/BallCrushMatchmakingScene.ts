@@ -1,6 +1,7 @@
 // src/scenes/ball-crush/BallCrushMatchmakingScene.ts
 import Phaser from 'phaser';
 import { ballCrushMultiplayer } from '../../firebase/ballCrushMultiplayer';
+import { updateBallCrushWalletBalance } from '../../firebase/ballCrushSimple';
 import { ref, onValue, remove } from 'firebase/database';
 import { db } from '../../firebase/init';
 
@@ -18,6 +19,12 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
   private maxSearchTime: number = 90000; // 90 seconds
   private searchStartTime: number = 0;
 
+  /**
+   * Tracks whether we successfully deducted the $1 fee this session.
+   * Ensures we only refund if we actually charged, and never charge twice.
+   */
+  private feeCharged: boolean = false;
+
   // Firebase listener — this is the ONLY mechanism for match detection
   private matchListener: (() => void) | null = null;
 
@@ -34,16 +41,41 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
   }
 
   init(data: { username: string; uid: string; displayName: string; avatar: string }) {
-    this.username    = data.username    || '';
-    this.uid         = data.uid         || '';
-    this.displayName = data.displayName || data.username || '';
-    this.avatar      = data.avatar      || 'default';
-    this.cancelled   = false;
-    this.matchFound  = false;
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('⚽ BallCrushMatchmakingScene init STARTED');
+    console.log('📦 Data received:', data);
+
+    // CRITICAL: Reset ALL flags — prevents stale state from previous sessions
+    this.username        = data.username    || '';
+    this.uid             = data.uid         || '';
+    this.displayName     = data.displayName || data.username || '';
+    this.avatar          = data.avatar      || 'default';
+    this.cancelled       = false;
+    this.matchFound      = false;
     this.isTransitioning = false;
+    this.feeCharged      = false; // Reset so we don't double-charge
+    this.searchStartTime = 0;
+
+    // Clean up any existing timers/listeners from a previous run
+    if (this.searchTimer) {
+      this.searchTimer.destroy();
+      this.searchTimer = null as any;
+    }
+    if (this.heartbeatTimer) {
+      this.heartbeatTimer.destroy();
+      this.heartbeatTimer = null as any;
+    }
+    if (this.matchListener) {
+      this.matchListener();
+      this.matchListener = null;
+    }
+
+    console.log('✅ Parsed values:', { username: this.username, uid: this.uid });
+    console.log('   flags reset: cancelled=false, matchFound=false, isTransitioning=false');
   }
 
   async create() {
+    console.log('🎬 BallCrushMatchmakingScene create() started');
     this.searchStartTime = Date.now();
 
     this.cameras.main.setBackgroundColor('#1a3a1a');
@@ -91,141 +123,302 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
 
-    this.cancelBtn.on('pointerdown', () => this.cancelSearch());
+    this.cancelBtn.on('pointerdown', () => {
+      console.log('🖱️ Cancel button clicked');
+      this.cancelSearch();
+    });
 
-    // Animated search dots
+    // ── STEP 1: Clear stale match notifications ──
+    console.log(`🗑️ Clearing stale match notifications for ${this.uid}`);
+    await remove(ref(db, `matches/${this.uid}`));
+    console.log('✅ Stale notifications cleared');
+
+    // ── STEP 2: Charge the $1 fee ONCE before doing anything else ──
+    // Done here (not in the start scene) so retries don't double-charge.
+    console.log('💰 Charging $1 game fee...');
+    const feeSuccess = await updateBallCrushWalletBalance(
+      this.uid,
+      1.00,
+      'game_fee',
+      'Ball Crush game fee'
+    );
+
+    if (!feeSuccess) {
+      console.error('❌ Insufficient funds!');
+      this.safeSetText(this.statusText, '❌ Insufficient funds!');
+      this.time.delayedCall(2000, () => {
+        this.scene.start('BallCrushStartScene', { username: this.username, uid: this.uid });
+      });
+      return; // feeCharged stays false — no refund will be issued
+    }
+
+    this.feeCharged = true;
+    console.log('✅ $1 fee charged — feeCharged=true');
+
+    // ── STEP 3: Set up match listener BEFORE joining queue ──
+    console.log(`📡 Setting up match listener for: matches/${this.uid}`);
+    const matchRef = ref(db, `matches/${this.uid}`);
+    this.matchListener = onValue(matchRef, (snapshot) => {
+      console.log('🔔 MATCH LISTENER FIRED');
+      console.log(`   exists=${snapshot.exists()} matchFound=${this.matchFound} isTransitioning=${this.isTransitioning} cancelled=${this.cancelled}`);
+
+      if (snapshot.exists() && !this.matchFound && !this.isTransitioning && !this.cancelled) {
+        const match = snapshot.val();
+        console.log('🎯 VALID MATCH — proceeding to lobby!', match);
+
+        // Remove the notification immediately so it won't re-fire on refresh
+        remove(ref(db, `matches/${this.uid}`)).catch((err) =>
+          console.error('❌ Failed to remove match notification:', err)
+        );
+
+        this.goToLobby(match.lobbyId);
+      } else {
+        if (!snapshot.exists()) console.log('   → snapshot empty, ignoring');
+        if (this.matchFound) console.log('   → matchFound already true, ignoring duplicate');
+        if (this.isTransitioning) console.log('   → already transitioning, ignoring');
+        if (this.cancelled) console.log('   → cancelled, ignoring');
+      }
+    });
+
+    // ── STEP 4: Animated search dots + elapsed timer ──
     let dots = 0;
     this.searchTimer = this.time.addEvent({
       delay: 500,
       callback: () => {
-        if (this.matchFound || this.cancelled) return;
-        dots = (dots + 1) % 4;
-        this.searchText.setText('Searching' + '.'.repeat(dots));
+        if (!this.matchFound && !this.cancelled) {
+          dots = (dots + 1) % 4;
+          this.searchText.setText('Searching' + '.'.repeat(dots));
 
-        const elapsed = Math.floor((Date.now() - this.searchStartTime) / 1000);
-        this.timerText.setText(`${elapsed}s`);
-
-        // Timeout check
-        if (Date.now() - this.searchStartTime > this.maxSearchTime) {
-          this.handleTimeout();
+          const elapsed = Math.floor((Date.now() - this.searchStartTime) / 1000);
+          this.timerText.setText(`${elapsed}s`);
         }
       },
       loop: true
     });
 
-    // ── Join queue ──
-    await this.joinQueueAndListen();
+    // ── STEP 5: Join the matchmaking queue ──
+    console.log('📝 Joining queue...');
+    await this.joinQueue();
+
+    // ── STEP 6: Heartbeat — keep presence alive every 10 seconds ──
+    this.heartbeatTimer = this.time.addEvent({
+      delay: 10000,
+      callback: async () => {
+        if (!this.cancelled && !this.matchFound) {
+          console.log(`💓 Heartbeat for ${this.uid}`);
+          await ballCrushMultiplayer.setPlayerOnline(this.uid, true);
+          await ballCrushMultiplayer.setPlayerQueueStatus(this.uid, true);
+        }
+      },
+      loop: true
+    });
+
+    // ── STEP 7: Timeout handler ──
+    console.log(`⏱️ Timeout set for ${this.maxSearchTime / 1000}s`);
+    this.time.delayedCall(this.maxSearchTime, () => {
+      console.log('⏰ TIMEOUT CHECK');
+      console.log(`   matchFound=${this.matchFound} cancelled=${this.cancelled} isTransitioning=${this.isTransitioning}`);
+
+      if (!this.matchFound && !this.cancelled && !this.isTransitioning) {
+        console.log('⚠️ Search timed out');
+        this.handleTimeout();
+      } else {
+        console.log('✅ Timeout ignored — match found or cancelled already');
+      }
+    });
+
+    // ── STEP 8: Force matchmaking service restart at 20s if no match yet ──
+    this.time.delayedCall(20000, () => {
+      if (!this.matchFound && !this.cancelled) {
+        console.log('🔧 Forcing matchmaking service restart...');
+        ballCrushMultiplayer.stopMatchmakingService();
+        ballCrushMultiplayer.startMatchmakingService();
+      }
+    });
+
+    console.log('✅ create() complete — waiting for match...');
   }
 
-  private async joinQueueAndListen() {
-    if (this.cancelled) return;
+  /**
+   * Joins the queue. Retries on network failure.
+   */
+  private async joinQueue() {
+    console.log('🔍 joinQueue() called');
+
+    if (this.cancelled || this.matchFound || this.isTransitioning) {
+      console.log('⚠️ joinQueue skipped — scene already ending');
+      return;
+    }
 
     try {
-      this.statusText.setText('Joining queue...');
-
+      console.log('🎮 Calling ballCrushMultiplayer.joinQueue()...');
       await ballCrushMultiplayer.joinQueue(
         this.uid,
         this.username,
         this.displayName,
         this.avatar
       );
-
-      this.statusText.setText('In queue — waiting for opponent...');
-
-      // ── THE ONLY match detection mechanism ──
-      // The matchmaking service writes to matches/${uid} when a lobby is ready.
-      // joinQueue already cleared any stale matches/ entry, so this is clean.
-      const matchRef = ref(db, `matches/${this.uid}`);
-      this.matchListener = onValue(matchRef, async (snapshot) => {
-        if (!snapshot.exists() || this.matchFound || this.cancelled) return;
-
-        const match = snapshot.val();
-        console.log('🎯 Match notification received:', match);
-
-        // Validate the lobby actually exists before transitioning
-        const lobby = await ballCrushMultiplayer.getLobby(match.lobbyId);
-        if (!lobby) {
-          console.warn('⚠️ Match notification pointed to missing lobby, re-queuing...');
-          await remove(matchRef);
-          // Re-join queue — the matchmaker will pair us again
-          this.time.delayedCall(500, () => this.joinQueueAndListen());
-          return;
-        }
-
-        // Consume the notification immediately so it won't re-fire on refresh
-        await remove(matchRef);
-        this.goToLobby(match.lobbyId);
-      });
-
-      // ── Heartbeat: refresh our presence so matchmaker knows we're still alive ──
-      this.heartbeatTimer = this.time.addEvent({
-        delay: 10000, // every 10 seconds
-        callback: async () => {
-          if (this.cancelled || this.matchFound) return;
-          await ballCrushMultiplayer.setPlayerOnline(this.uid, true);
-          await ballCrushMultiplayer.setPlayerQueueStatus(this.uid, true);
-        },
-        loop: true
-      });
+      console.log('✅ Successfully joined queue!');
+      this.safeSetText(this.statusText, 'In queue — waiting for opponent...');
 
     } catch (error) {
       console.error('❌ Failed to join queue:', error);
-      this.statusText.setText('Connection error. Retrying...');
+      this.safeSetText(this.statusText, 'Connection issue, retrying...');
+
+      // Retry after 2 seconds
       this.time.delayedCall(2000, () => {
-        if (!this.cancelled) this.joinQueueAndListen();
+        if (!this.cancelled && !this.matchFound && !this.isTransitioning) {
+          console.log('🔄 Retrying joinQueue...');
+          this.joinQueue();
+        }
       });
     }
   }
 
   private handleTimeout() {
-    if (this.cancelled || this.matchFound) return;
-    this.cancelled = true;
+    if (this.matchFound || this.cancelled || this.isTransitioning) {
+      console.log('⚠️ Timeout ignored');
+      return;
+    }
 
-    this.statusText.setText('No opponent found. Try again!');
-    this.searchText.setText('Timed out');
+    this.cancelled = true;
+    this.isTransitioning = true;
+
+    this.safeSetText(this.statusText, 'No opponent found. Try again!');
+    this.safeSetText(this.searchText, 'Timed out');
+
+    if (this.searchTimer) this.searchTimer.destroy();
+    if (this.heartbeatTimer) this.heartbeatTimer.destroy();
+    if (this.matchListener) {
+      this.matchListener();
+      this.matchListener = null;
+    }
+
+    ballCrushMultiplayer.leaveQueue(this.uid).then(() => {
+      console.log('✅ Left queue after timeout');
+    });
+
+    // Refund ONLY if we actually charged
+    this.issueRefund('Matchmaking timeout');
+
+    // Show retry button
     this.cancelBtn.setText('🔄 TRY AGAIN');
     this.cancelBtn.setStyle({ backgroundColor: '#ff9800' });
     this.cancelBtn.off('pointerdown');
     this.cancelBtn.on('pointerdown', () => {
-      // Reset state and retry
-      this.cancelled  = false;
-      this.matchFound = false;
-      this.searchStartTime = Date.now();
-      this.cancelBtn.setText('❌ CANCEL');
-      this.cancelBtn.setStyle({ backgroundColor: '#f44336' });
-      this.cancelBtn.off('pointerdown');
-      this.cancelBtn.on('pointerdown', () => this.cancelSearch());
-      this.joinQueueAndListen();
+      this.scene.restart({
+        username: this.username,
+        uid: this.uid,
+        displayName: this.displayName,
+        avatar: this.avatar
+      });
     });
   }
 
-  private goToLobby(lobbyId: string) {
-    if (this.isTransitioning || this.cancelled) return;
-    this.isTransitioning = true;
-    this.matchFound = true;
+  /**
+   * Issues a $1 refund if and only if feeCharged is true.
+   * Sets feeCharged = false afterwards to prevent double-refunds.
+   */
+  private async issueRefund(reason: string) {
+    if (!this.feeCharged) {
+      console.log('ℹ️ No refund needed — fee was never charged');
+      return;
+    }
 
-    this.statusText.setText('Match found! Loading lobby...');
-    this.searchText.setText('Opponent located!');
+    this.feeCharged = false; // Prevent double-refund even if called twice
+    console.log(`💰 Issuing $1 refund — reason: ${reason}`);
+
+    try {
+      await updateBallCrushWalletBalance(
+        this.uid,
+        1.00,
+        'refund',
+        `${reason} - refund`
+      );
+      console.log('✅ $1 refund issued successfully');
+
+      if (this.scene && this.scene.isActive()) {
+        const refundText = this.add.text(180, 450, '+$1 REFUNDED', {
+          fontSize: '18px',
+          color: '#00ff00',
+          fontStyle: 'bold',
+          stroke: '#000000',
+          strokeThickness: 2
+        }).setOrigin(0.5);
+
+        this.tweens.add({
+          targets: refundText,
+          y: 400,
+          alpha: 0,
+          duration: 1500,
+          onComplete: () => refundText.destroy()
+        });
+      }
+    } catch (err) {
+      console.error('❌ Refund failed!', err);
+    }
+  }
+
+  private goToLobby(lobbyId: string) {
+    console.log('🎉 goToLobby() —', lobbyId);
+
+    if (this.matchFound || this.isTransitioning) {
+      console.log('⚠️ Duplicate match event ignored');
+      return;
+    }
+
+    this.matchFound = true;
+    this.isTransitioning = true;
+
+    this.safeSetText(this.statusText, 'Match found! Loading lobby...');
+    this.safeSetText(this.searchText, 'Opponent located!');
     this.cameras.main.flash(500, 255, 255, 255);
+
+    this.cancelBtn.disableInteractive();
+    this.cancelBtn.setStyle({ backgroundColor: '#888888' });
+
+    if (this.searchTimer) this.searchTimer.destroy();
+    if (this.heartbeatTimer) this.heartbeatTimer.destroy();
+
+    ballCrushMultiplayer.setPlayerQueueStatus(this.uid, false).catch(console.error);
 
     this.cameras.main.fadeOut(600, 0, 0, 0);
     this.cameras.main.once('camerafadeoutcomplete', () => {
+      console.log(`🚀 → BallCrushLobbyScene lobbyId=${lobbyId}`);
       this.scene.start('BallCrushLobbyScene', {
         username: this.username,
-        uid:      this.uid,
+        uid: this.uid,
         lobbyId
       });
     });
   }
 
   private async cancelSearch() {
-    if (this.cancelled || this.matchFound) return;
+    console.log('🚪 cancelSearch()');
+    console.log(`   cancelled=${this.cancelled} matchFound=${this.matchFound} isTransitioning=${this.isTransitioning}`);
+
+    if (this.cancelled || this.matchFound || this.isTransitioning) {
+      console.log('⚠️ Cancel ignored');
+      return;
+    }
+
     this.cancelled = true;
+    this.isTransitioning = true;
+    this.safeSetText(this.statusText, 'Cancelling...');
 
-    this.statusText.setText('Cancelling...');
-    this.stopTimers();
+    if (this.searchTimer) this.searchTimer.destroy();
+    if (this.heartbeatTimer) this.heartbeatTimer.destroy();
+    if (this.matchListener) {
+      this.matchListener();
+      this.matchListener = null;
+    }
 
+    console.log('🗑️ Leaving queue...');
     await ballCrushMultiplayer.leaveQueue(this.uid);
+    console.log('✅ Left queue');
+
+    // Refund ONLY if we actually charged
+    await this.issueRefund('Matchmaking cancelled');
 
     this.cameras.main.fadeOut(400, 0, 0, 0);
     this.cameras.main.once('camerafadeoutcomplete', () => {
@@ -236,25 +429,36 @@ export class BallCrushMatchmakingScene extends Phaser.Scene {
     });
   }
 
-  private stopTimers() {
-    if (this.searchTimer)    this.searchTimer.destroy();
-    if (this.heartbeatTimer) this.heartbeatTimer.destroy();
+  /** Safely set text — checks scene is still active first */
+  private safeSetText(textObj: Phaser.GameObjects.Text, value: string) {
+    if (this.scene && this.scene.isActive() && textObj && textObj.active) {
+      textObj.setText(value);
+    }
   }
 
   // ── Cleanup when Phaser shuts down the scene ──
   shutdown() {
-    this.stopTimers();
+    console.log('🛑 BallCrushMatchmakingScene shutdown()');
+    console.log(`   matchFound=${this.matchFound} isTransitioning=${this.isTransitioning} cancelled=${this.cancelled}`);
+
+    if (this.searchTimer) this.searchTimer.destroy();
+    if (this.heartbeatTimer) this.heartbeatTimer.destroy();
 
     if (this.matchListener) {
       this.matchListener();
       this.matchListener = null;
     }
 
-    if (!this.matchFound && !this.cancelled) {
+    // If shutdown fires unexpectedly (e.g. browser close, scene switch from outside)
+    // and we haven't cancelled/matched yet, clean up and refund.
+    if (!this.matchFound && !this.cancelled && !this.isTransitioning) {
+      console.log('⚠️ Unexpected shutdown — issuing refund and leaving queue');
+      this.issueRefund('Unexpected shutdown');
       ballCrushMultiplayer.leaveQueue(this.uid);
+      ballCrushMultiplayer.setPlayerOnline(this.uid, false);
+    } else {
+      console.log('✅ Cleanup skipped — match found or intentionally cancelled');
     }
-
-    ballCrushMultiplayer.setPlayerOnline(this.uid, false);
   }
 
   // ── Visual helpers ────────────────────────────────────────────────────────

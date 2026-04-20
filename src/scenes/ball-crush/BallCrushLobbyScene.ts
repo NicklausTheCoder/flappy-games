@@ -12,6 +12,7 @@ export class BallCrushLobbyScene extends Phaser.Scene {
   private unsubscribe: (() => void) | null = null;
   private isPlayerReady: boolean = false;
   private gameStarted: boolean = false;
+  private hasHandledOpponentLeft: boolean = false;
 
   // UI Elements
   private statusText!: Phaser.GameObjects.Text;
@@ -34,12 +35,13 @@ export class BallCrushLobbyScene extends Phaser.Scene {
   }
 
   init(data: { username: string; uid: string; lobbyId: string }) {
-    console.log('🎮 BallCrush LobbyScene initialized', data);
+    console.log('⚽ BallCrush LobbyScene initialized', data);
     this.username = data.username;
     this.uid = data.uid;
     this.lobbyId = data.lobbyId;
     this.isPlayerReady = false;
     this.gameStarted = false;
+    this.hasHandledOpponentLeft = false;
   }
 
   async create() {
@@ -86,15 +88,15 @@ export class BallCrushLobbyScene extends Phaser.Scene {
       fontStyle: 'bold'
     }).setOrigin(0.5).setVisible(false);
 
-    // Back button
-    const backBtn = this.add.text(40, 580, '← LEAVE LOBBY', {
+    // Leave button
+    const leaveBtn = this.add.text(40, 580, '← LEAVE LOBBY', {
       fontSize: '14px',
       color: '#ffffff',
       backgroundColor: '#f44336',
       padding: { x: 10, y: 6 }
     }).setInteractive({ useHandCursor: true });
 
-    backBtn.on('pointerdown', () => {
+    leaveBtn.on('pointerdown', () => {
       this.leaveLobby();
     });
 
@@ -156,37 +158,23 @@ export class BallCrushLobbyScene extends Phaser.Scene {
     if (!this.scene || !this.scene.isActive()) return;
 
     if (!lobby) {
-      console.log('⏳ Waiting for lobby data...');
       this.statusText.setText('⏳ Loading lobby...');
       return;
     }
 
-    // ── Game started — hand off to Socket.IO game scene ───────────────
+    // Opponent left before game started — show message and go back
+    if (lobby.status === 'dead' && !this.gameStarted && !this.hasHandledOpponentLeft) {
+      this.handleOpponentLeft();
+      return;
+    }
+
+    // Ignore dead lobbies if game already started (handled in game scene)
+    if (lobby.status === 'dead' && this.gameStarted) return;
+
+    // Game is starting — hand off to game scene
     if (lobby.status === 'playing' && !this.gameStarted) {
-      this.gameStarted = true;
-      this.statusText.setText('⚽ Game starting!');
-      this.readyButton.setVisible(false);
-
-      if (this.countdownTimer) {
-        this.countdownTimer.destroy();
-      }
-
-      // Determine role: first player in lobby = bottom, second = top
-      const playerIds = Object.keys(lobby.players);
-      const myRole: 'bottom' | 'top' = playerIds[0] === this.uid ? 'bottom' : 'top';
-
-      console.log(`🎮 My role: ${myRole} (I am player index ${playerIds.indexOf(this.uid)})`);
-
-      this.time.delayedCall(1000, () => {
-        this.scene.start('BallCrushGameScene', {
-          username: this.username,
-          uid:      this.uid,
-          lobbyId:  this.lobbyId,   // used as Socket.IO roomId
-          role:     myRole
-        });
-      });
-
-      return; // Don't process rest of update
+      this.startGame(lobby);
+      return;
     }
 
     this.lobby = lobby;
@@ -216,6 +204,12 @@ export class BallCrushLobbyScene extends Phaser.Scene {
 
       if (players.every(p => p.isReady)) {
         this.statusText.setText('✅ Both players ready! Starting game...');
+
+        // Mark lobby as 'ready' before starting countdown
+        if (lobby.status === 'waiting') {
+          ballCrushMultiplayer.markLobbyReady(this.lobbyId);
+        }
+
         this.startCountdown();
       } else {
         this.statusText.setText('⏳ Waiting for both players to ready up...');
@@ -223,6 +217,7 @@ export class BallCrushLobbyScene extends Phaser.Scene {
         if (!this.isPlayerReady) {
           this.readyButton.setStyle({ backgroundColor: '#4CAF50' });
           this.readyButton.setText('✅ CLICK TO READY UP');
+          this.readyButton.setColor('#ffffff');
           this.readyButton.setInteractive({ useHandCursor: true });
           this.readyButton.off('pointerdown');
           this.readyButton.on('pointerdown', () => { this.setReady(); });
@@ -246,6 +241,33 @@ export class BallCrushLobbyScene extends Phaser.Scene {
     this.lobbyCodeText.setText(`Room: ${this.lobbyId.substring(0, 8)}...`);
   }
 
+  private handleOpponentLeft() {
+    if (this.hasHandledOpponentLeft) return;
+    this.hasHandledOpponentLeft = true;
+
+    console.log('👋 Opponent left the lobby');
+
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = null;
+    }
+    if (this.countdownTimer) {
+      this.countdownTimer.destroy();
+    }
+
+    ballCrushMultiplayer.setPlayerQueueStatus(this.uid, false).catch(console.error);
+    ballCrushMultiplayer.setPlayerOnline(this.uid, false).catch(console.error);
+
+    this.statusText.setText('❌ Opponent left the lobby');
+
+    this.time.delayedCall(2000, () => {
+      this.scene.start('BallCrushStartScene', {
+        username: this.username,
+        uid: this.uid
+      });
+    });
+  }
+
   private async setReady() {
     if (!this.lobby || this.isPlayerReady) return;
 
@@ -261,6 +283,32 @@ export class BallCrushLobbyScene extends Phaser.Scene {
       scale: 1.05,
       duration: 200,
       yoyo: true
+    });
+  }
+
+  private startGame(lobby: BallCrushLobby) {
+    if (this.gameStarted) return;
+    this.gameStarted = true;
+
+    console.log('🎮 Starting game...');
+    this.statusText.setText('⚽ Game starting!');
+    this.readyButton.setVisible(false);
+
+    if (this.countdownTimer) {
+      this.countdownTimer.destroy();
+    }
+
+    // Determine role: first playerID = bottom, second = top
+    const myRole: 'bottom' | 'top' = lobby.playerIds[0] === this.uid ? 'bottom' : 'top';
+    console.log(`🎨 My role: ${myRole}`);
+
+    this.time.delayedCall(500, () => {
+      this.scene.start('BallCrushGameScene', {
+        username: this.username,
+        uid: this.uid,
+        lobbyId: this.lobbyId,
+        role: myRole
+      });
     });
   }
 
@@ -298,8 +346,14 @@ export class BallCrushLobbyScene extends Phaser.Scene {
           this.countdownTimer.destroy();
           this.countdownText.setVisible(false);
 
-          if (this.lobby && this.lobby.status === 'waiting' && !this.gameStarted) {
-            ballCrushMultiplayer.startGame(this.lobbyId);
+          // Only the host (first playerID) writes the status change.
+          // Both clients wait for Firebase to broadcast status: 'playing',
+          // which triggers startGame() for both — prevents double-starts.
+          if (this.lobby && !this.gameStarted) {
+            const isHost = this.lobby.playerIds[0] === this.uid;
+            if (isHost && (this.lobby.status === 'waiting' || this.lobby.status === 'ready')) {
+              ballCrushMultiplayer.startGame(this.lobbyId);
+            }
           }
         }
       },
@@ -310,16 +364,20 @@ export class BallCrushLobbyScene extends Phaser.Scene {
   private async leaveLobby() {
     if (this.unsubscribe) {
       this.unsubscribe();
+      this.unsubscribe = null;
+    }
+    if (this.countdownTimer) {
+      this.countdownTimer.destroy();
     }
 
     this.statusText.setText('👋 Leaving lobby...');
-    await ballCrushMultiplayer.playerLeave(this.lobbyId, this.uid);
 
-    const lobby = await ballCrushMultiplayer.getLobby(this.lobbyId);
-    if (lobby && lobby.playerIds.length === 1) {
-      await remove(ref(db, `lobbies/${this.lobbyId}`));
-      await remove(ref(db, `gameStates/${this.lobbyId}`));
-    }
+    await ballCrushMultiplayer.setPlayerQueueStatus(this.uid, false);
+    await ballCrushMultiplayer.setPlayerOnline(this.uid, false);
+
+    // Use cancelFromLobby — marks lobby dead and notifies opponent
+    // WITHOUT triggering endGame/prize logic (unlike playerLeave)
+    await ballCrushMultiplayer.cancelFromLobby(this.lobbyId, this.uid);
 
     this.scene.start('BallCrushStartScene', {
       username: this.username,
@@ -357,6 +415,7 @@ export class BallCrushLobbyScene extends Phaser.Scene {
   }
 
   shutdown() {
+    console.log('🛑 BallCrushLobbyScene shutdown()');
     if (this.unsubscribe) {
       this.unsubscribe();
     }

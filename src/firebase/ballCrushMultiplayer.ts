@@ -41,12 +41,6 @@ export interface BallCrushLobby {
   maxPlayers: 2;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SERVER-SIDE MATCHMAKING (run this in a Cloud Function or trusted backend)
-// Only ONE instance should run this — not every client.
-// Export it so your backend/admin can import and call startMatchmakingService().
-// ─────────────────────────────────────────────────────────────────────────────
-
 class BallCrushMultiplayer {
   private matchmakingListener: (() => void) | null = null;
 
@@ -89,6 +83,16 @@ class BallCrushMultiplayer {
     }
   }
 
+  async markLobbyReady(lobbyId: string): Promise<void> {
+    if (!lobbyId) return;
+    try {
+      await update(ref(db, `lobbies/${lobbyId}`), { status: 'ready' });
+      console.log(`✅ Lobby ${lobbyId} marked as ready`);
+    } catch (error) {
+      console.error('Error marking lobby as ready:', error);
+    }
+  }
+
   async isPlayerOnlineAndInQueue(uid: string): Promise<boolean> {
     if (!uid) return false;
     try {
@@ -106,7 +110,6 @@ class BallCrushMultiplayer {
   /**
    * Join the matchmaking queue.
    * Cleans up ONLY stale (waiting/dead) lobbies — never touches finished ones.
-   * After a game ends, call this to requeue cleanly.
    */
   async joinQueue(
     uid: string,
@@ -153,13 +156,14 @@ class BallCrushMultiplayer {
     console.log(`🚪 ${uid} left ball-crush queue`);
     await Promise.all([
       remove(ref(db, `matchmaking/ball-crush/${uid}`)),
+      remove(ref(db, `matching_lock/${uid}`)),
       update(ref(db, `online/${uid}`), { inQueue: false, lastSeen: Date.now() })
     ]);
   }
 
   /**
    * Cleans up lobbies that are stuck in 'waiting' or 'dead' state for this player.
-   * DOES NOT touch 'finished' lobbies — avoids wiping matches/ for a new game.
+   * DOES NOT touch 'finished' lobbies.
    */
   private async cleanupStaleLobbies(uid: string): Promise<void> {
     try {
@@ -190,67 +194,117 @@ class BallCrushMultiplayer {
   }
 
   // =========== MATCHMAKING SERVICE ===========
-  // ⚠️  Run this in ONE place only (Cloud Function / admin server).
-  //     At scale, every client running this causes duplicate lobbies.
 
   startMatchmakingService(): void {
     if (this.matchmakingListener) return;
 
-    const queueRef = ref(db, 'matchmaking/ball-crush');
+    const lockRef = ref(db, 'matchmaking_lock/ball-crush');
+    const myId = Math.random().toString(36).slice(2);
 
-    this.matchmakingListener = onValue(queueRef, async (snapshot) => {
-      if (!snapshot.exists()) return;
-
-      const queue = snapshot.val() as Record<string, any>;
-      const players = Object.values(queue);
-
-      if (players.length < 2) return;
-
-      // Filter: only players that are truly online and in queue
+    runTransaction(lockRef, (current) => {
       const now = Date.now();
-      const online = players.filter(p =>
-        p.uid &&
-        (now - (p.joinedAt || 0)) < 120000 // in queue less than 2 min
-      );
+      if (!current || (now - current.claimedAt) > 8000) {
+        return { claimedAt: now, claimedBy: myId };
+      }
+      return undefined; // Someone else holds the lock
+    }).then((result) => {
+      if (!result.committed) {
+        console.log('👀 Another client is matchmaking, just listening for our own match');
+        setTimeout(() => {
+          this.startMatchmakingService();
+        }, 9000);
+        return;
+      }
 
-      if (online.length < 2) return;
+      console.log('🎯 This client is the ball-crush matchmaker');
+      const myLockValue = result.snapshot.val();
 
-      // Sort by join time (FIFO)
-      online.sort((a, b) => a.joinedAt - b.joinedAt);
+      // Renew the lock every 5s so other clients know we're still alive
+      const renewInterval = setInterval(async () => {
+        if (!this.matchmakingListener) { clearInterval(renewInterval); return; }
+        await update(lockRef, { claimedAt: Date.now() });
+      }, 5000);
 
-      // Process pairs — handle multiple matches in one pass for scale
-      for (let i = 0; i + 1 < online.length; i += 2) {
-        const p1 = online[i];
-        const p2 = online[i + 1];
+      const queueRef = ref(db, 'matchmaking/ball-crush');
+      this.matchmakingListener = onValue(queueRef, async (snapshot) => {
+        if (!snapshot.exists()) return;
 
-        if (p1.uid === p2.uid) continue;
+        // Verify we still hold the lock before doing anything
+        const lockSnap = await get(lockRef);
+        if (!lockSnap.exists() || lockSnap.val().claimedBy !== myLockValue.claimedBy) {
+          console.log('⚠️ Lost matchmaking lock, stopping');
+          this.stopMatchmakingService();
+          clearInterval(renewInterval);
+          return;
+        }
 
-        // Atomically claim both slots
-        const claimed1 = await this.atomicClaimPlayer(
-          ref(db, `matchmaking/ball-crush/${p1.uid}`)
+        const queue = snapshot.val() as Record<string, any>;
+        const players = Object.values(queue) as any[];
+        if (players.length < 2) return;
+
+        const now = Date.now();
+        // Only consider players who joined recently (within 3 minutes)
+        const eligible = players.filter(
+          (p) => p.uid && (!p.joinedAt || (now - p.joinedAt) < 180000)
         );
-        if (!claimed1) continue;
+        if (eligible.length < 2) return;
 
-        const claimed2 = await this.atomicClaimPlayer(
-          ref(db, `matchmaking/ball-crush/${p2.uid}`)
-        );
-        if (!claimed2) {
-          // Roll p1 back
-          await set(ref(db, `matchmaking/ball-crush/${p1.uid}`), p1);
-          continue;
+        // Sort oldest-first for fairness (FIFO)
+        eligible.sort((a, b) => a.joinedAt - b.joinedAt);
+
+        // Process one pair per tick to keep things clean
+        const p1 = eligible[0];
+        const p2 = eligible[1];
+        if (p1.uid === p2.uid) return;
+
+        // Lock both players at the match-assignment level first
+        // to prevent two concurrent matchmaker instances from double-assigning
+        const locked1 = await this.lockPlayerForMatch(p1.uid);
+        if (!locked1) {
+          console.log(`⚠️ ${p1.uid} already being matched, skipping`);
+          return;
+        }
+
+        const locked2 = await this.lockPlayerForMatch(p2.uid);
+        if (!locked2) {
+          console.log(`⚠️ ${p2.uid} already being matched, skipping`);
+          await this.unlockPlayerFromMatch(p1.uid);
+          return;
+        }
+
+        // Now atomically claim both from the queue
+        const claim1 = await this.atomicClaimPlayer(p1.uid);
+        if (!claim1.claimed) {
+          console.log(`⚠️ Failed to claim ${p1.uid} from queue (already taken)`);
+          await this.unlockPlayerFromMatch(p1.uid);
+          await this.unlockPlayerFromMatch(p2.uid);
+          return;
+        }
+
+        const claim2 = await this.atomicClaimPlayer(p2.uid);
+        if (!claim2.claimed) {
+          console.log(`⚠️ Failed to claim ${p2.uid} from queue (already taken)`);
+          // Roll back p1
+          await set(ref(db, `matchmaking/ball-crush/${p1.uid}`), claim1.data);
+          await this.unlockPlayerFromMatch(p1.uid);
+          await this.unlockPlayerFromMatch(p2.uid);
+          return;
         }
 
         console.log(`✅ Matched: ${p1.username} vs ${p2.username}`);
         try {
-          await this.createLobby(p1.uid, p2.uid, p1, p2);
+          await this.createLobby(p1.uid, p2.uid, claim1.data, claim2.data);
         } catch (err) {
-          console.error('Failed to create lobby, re-queuing:', err);
-          // Re-queue both on failure
-          await set(ref(db, `matchmaking/ball-crush/${p1.uid}`), p1);
-          await set(ref(db, `matchmaking/ball-crush/${p2.uid}`), p2);
+          console.error('Failed to create lobby, re-queuing both players:', err);
+          await set(ref(db, `matchmaking/ball-crush/${p1.uid}`), claim1.data);
+          await set(ref(db, `matchmaking/ball-crush/${p2.uid}`), claim2.data);
+        } finally {
+          // Always release the match-level locks
+          await this.unlockPlayerFromMatch(p1.uid);
+          await this.unlockPlayerFromMatch(p2.uid);
         }
-      }
-    });
+      });
+    }).catch(console.error);
   }
 
   stopMatchmakingService(): void {
@@ -260,17 +314,56 @@ class BallCrushMultiplayer {
     }
   }
 
-  private async atomicClaimPlayer(playerRef: any): Promise<boolean> {
+  /**
+   * Atomically claim a player from the queue.
+   * Returns { claimed: true, data } ONLY if THIS caller was the one who removed the entry.
+   */
+  private async atomicClaimPlayer(uid: string): Promise<{ claimed: boolean; data: any }> {
+    const playerRef = ref(db, `matchmaking/ball-crush/${uid}`);
     try {
-      const result = await runTransaction(playerRef, (current) => {
-        if (current === null) return current; // Already claimed
-        return null; // Claim it
+      let capturedData: any = null;
+
+      const result = await runTransaction(playerRef, (currentData) => {
+        if (currentData === null) {
+          // Already claimed by someone else — abort
+          return undefined;
+        }
+        capturedData = currentData;
+        return null; // Delete the entry atomically
       });
-      return result.committed && result.snapshot.val() === null;
+
+      if (result.committed && result.snapshot.val() === null && capturedData !== null) {
+        return { claimed: true, data: capturedData };
+      }
+
+      return { claimed: false, data: null };
     } catch (error) {
-      console.error('Transaction failed:', error);
+      console.error('Transaction failed for', uid, error);
+      return { claimed: false, data: null };
+    }
+  }
+
+  /**
+   * Guard against a player being assigned to multiple lobbies simultaneously.
+   * Uses a Firebase transaction on a per-player "matching_lock" flag.
+   */
+  private async lockPlayerForMatch(uid: string): Promise<boolean> {
+    const lockRef = ref(db, `matching_lock/${uid}`);
+    try {
+      const result = await runTransaction(lockRef, (current) => {
+        if (current !== null) return undefined; // Already locked — abort
+        return { lockedAt: Date.now() };
+      });
+      return result.committed;
+    } catch {
       return false;
     }
+  }
+
+  private async unlockPlayerFromMatch(uid: string): Promise<void> {
+    try {
+      await remove(ref(db, `matching_lock/${uid}`));
+    } catch { /* best effort */ }
   }
 
   // =========== LOBBY MANAGEMENT ===========
@@ -476,6 +569,7 @@ class BallCrushMultiplayer {
   }
 
   // =========== GAME END ===========
+
   async endGame(lobbyId: string, winnerUid: string): Promise<void> {
     if (!lobbyId || !winnerUid) return;
 
@@ -486,9 +580,6 @@ class BallCrushMultiplayer {
     });
 
     console.log(`🏆 Game finished, winner: ${winnerUid}`);
-
-    // Award prize server-side
-
 
     await remove(ref(db, `gameStates/${lobbyId}`));
 

@@ -6,7 +6,6 @@ import {
   getBallCrushLeaderboard,
   BallCrushUserData,
   BallCrushLeaderboardEntry,
-  deductBallCrushWalletBalance
 } from '../../firebase/ballCrushSimple';
 
 export class BallCrushStartScene extends Phaser.Scene {
@@ -33,7 +32,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     super({ key: 'BallCrushStartScene' });
   }
 
-  // ─── init — receives data from BallCrushLoaderScene ───────────────────────
+  // ─── init ─────────────────────────────────────────────────────────────────
   init(data: { username: string; uid: string; displayName?: string; avatar?: string }) {
     console.log('⚽ BallCrushStartScene received:', data);
 
@@ -49,7 +48,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     this.avatar = data.avatar || 'default';
   }
 
-  // ─── create ────────────────────────────────────────────────────────────────
+  // ─── create ───────────────────────────────────────────────────────────────
   async create() {
     console.log('🎨 Creating BallCrushStartScene for:', this.username);
 
@@ -66,7 +65,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     }
   }
 
-  // ─── Data fetching ─────────────────────────────────────────────────────────
+  // ─── Data fetching ────────────────────────────────────────────────────────
   private async fetchAllUserData() {
     console.log('📡 Fetching Ball Crush data for:', this.uid);
 
@@ -89,13 +88,11 @@ export class BallCrushStartScene extends Phaser.Scene {
 
     console.log('✅ Ball Crush user data fetched:', {
       username: this.username,
-      gamesPlayed: this.userData.gamesPlayed,
-      gamesWon: this.userData.gamesWon,
       balance: this.balance
     });
   }
 
-  // ─── Full UI ───────────────────────────────────────────────────────────────
+  // ─── Full UI ──────────────────────────────────────────────────────────────
   private buildFullUI() {
     if (!this.userData) return;
 
@@ -109,7 +106,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     this.addFooter();
   }
 
-  // ─── Background ────────────────────────────────────────────────────────────
+  // ─── Background ───────────────────────────────────────────────────────────
   private addBackground() {
     if (this.textures.exists('ball-background')) {
       const bg = this.add.image(180, 320, 'ball-background');
@@ -119,7 +116,6 @@ export class BallCrushStartScene extends Phaser.Scene {
       this.cameras.main.setBackgroundColor('#1a3a1a');
     }
 
-    // Floating background balls
     for (let i = 0; i < 6; i++) {
       const x = Phaser.Math.Between(20, 340);
       const y = Phaser.Math.Between(20, 620);
@@ -133,7 +129,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     }
   }
 
-  // ─── Title ─────────────────────────────────────────────────────────────────
+  // ─── Title ────────────────────────────────────────────────────────────────
   private addTitle() {
     this.add.text(180, 70, 'BALL CRUSH', {
       fontSize: '32px',
@@ -144,7 +140,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     }).setOrigin(0.5);
   }
 
-  // ─── Animated ball ─────────────────────────────────────────────────────────
+  // ─── Animated ball ────────────────────────────────────────────────────────
   private addBallAnimation() {
     if (!this.textures.exists('ball')) return;
 
@@ -162,7 +158,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     });
   }
 
-  // ─── Welcome message ───────────────────────────────────────────────────────
+  // ─── Welcome message ──────────────────────────────────────────────────────
   private createWelcomeMessage() {
     if (!this.userData) return;
 
@@ -178,17 +174,17 @@ export class BallCrushStartScene extends Phaser.Scene {
       color: '#ffffff'
     }).setOrigin(0.5);
 
-    const winRate = this.userData.gamesPlayed > 0
-      ? Math.round((this.userData.gamesWon / this.userData.gamesPlayed) * 100)
+    const winRate = this.userData.totalGames > 0
+      ? Math.round((this.userData.totalWins / this.userData.totalGames) * 100)
       : 0;
 
-    this.add.text(180, 230, `Wins: ${this.userData.gamesWon} | Win Rate: ${winRate}%`, {
+    this.add.text(180, 230, `Wins: ${this.userData.totalWins} | Win Rate: ${winRate}%`, {
       fontSize: '12px',
       color: '#ffffff'
     }).setOrigin(0.5);
   }
 
-  // ─── Balance display (top-left) ────────────────────────────────────────────
+  // ─── Balance display (top-left) ───────────────────────────────────────────
   private createBalanceDisplay() {
     const bg = this.add.graphics();
     bg.fillStyle(0x000000, 0.7);
@@ -203,7 +199,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     });
   }
 
-  // ─── Stats display (top-right) ─────────────────────────────────────────────
+  // ─── Stats display (top-right) ────────────────────────────────────────────
   private createStatsDisplay() {
     if (!this.userData) return;
 
@@ -215,12 +211,12 @@ export class BallCrushStartScene extends Phaser.Scene {
 
     this.add.text(250, 8, '📊', { fontSize: '20px' });
     this.add.text(275, 8, 'Stats:', { fontSize: '12px', color: '#ffffff' });
-    this.statsText = this.add.text(265, 23, `${this.userData.gamesPlayed ?? 0} Games`, {
+    this.statsText = this.add.text(265, 23, `${this.userData.totalGames ?? 0} Games`, {
       fontSize: '12px', color: '#ffaa00', fontStyle: 'bold'
     });
   }
 
-  // ─── Rank display (top-center) ─────────────────────────────────────────────
+  // ─── Rank display (top-center) ────────────────────────────────────────────
   private createRankDisplay() {
     const bg = this.add.graphics();
     bg.fillStyle(0x000000, 0.7);
@@ -235,7 +231,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     });
   }
 
-  // ─── Menu buttons ──────────────────────────────────────────────────────────
+  // ─── Menu buttons ─────────────────────────────────────────────────────────
   private createMenuButtons() {
     if (!this.userData) return;
 
@@ -245,17 +241,16 @@ export class BallCrushStartScene extends Phaser.Scene {
     const startY = 280;
 
     const buttons = [
-      { text: '🎮 FIND MATCH', color: '#FF9800', action: 'matchmaking' },
-      { text: '🏆 LEADERBOARD', color: '#2196F3', scene: 'BallCrushLeaderboardScene' },
-      { text: '👤 PROFILE', color: '#9C27B0', scene: 'BallCrushProfileScene' },
-      { text: '📊 MY STATS', color: '#9C27B0', scene: 'BallCrushStatsScene' },
-      { text: '🎮 BACK TO GAMES', color: '#FF5722', url: 'https://wintapgames.com/games' },
+      { text: '🎮 FIND MATCH ($1)', color: '#FF9800', action: 'matchmaking' },
+      { text: '🏆 LEADERBOARD',     color: '#2196F3', scene: 'BallCrushLeaderboardScene' },
+      { text: '👤 PROFILE',         color: '#9C27B0', scene: 'BallCrushProfileScene' },
+      { text: '📊 MY STATS',        color: '#9C27B0', scene: 'BallCrushStatsScene' },
+      { text: '🎮 BACK TO GAMES',   color: '#FF5722', url: 'https://wintapgames.com/games' },
     ];
 
     buttons.forEach((btn, index) => {
       const yPos = startY + index * 55;
 
-      // Button background
       const bg = this.add.graphics();
       const drawBg = (borderColor: number, borderWidth: number) => {
         bg.clear();
@@ -285,48 +280,31 @@ export class BallCrushStartScene extends Phaser.Scene {
         drawBg(0xffffff, 2);
       });
 
-      // ── Click handlers ─────────────────────────────────────────────
       if (btn.url) {
         button.on('pointerdown', () => { window.location.href = btn.url!; });
 
       } else if (btn.action === 'matchmaking') {
-        button.on('pointerdown', async () => {
+        button.on('pointerdown', () => {
+          // Balance pre-check — gives fast feedback, but the real atomic
+          // deduction happens inside BallCrushMatchmakingScene (same as checkers).
           if (this.balance < 1) {
             this.showInsufficientFunds();
             return;
           }
 
-          const success = await this.deductGameFee();
+          console.log('🔍 Starting Ball Crush matchmaking with:', {
+            username: this.username,
+            uid: this.uid,
+            displayName: this.displayName,
+            avatar: this.avatar
+          });
 
-          if (success) {
-            this.balance -= 1;
-            this.balanceText.setText(this.balance.toFixed(0));
-
-            // Flash balance red then go to matchmaking
-            this.tweens.add({
-              targets: this.balanceText,
-              scale: 1.3,
-              duration: 200,
-              yoyo: true,
-              onComplete: () => {
-                console.log('🔍 Starting Ball Crush matchmaking with:', {
-                  username: this.username,
-                  uid: this.uid,
-                  displayName: this.displayName,
-                  avatar: this.avatar
-                });
-
-                this.scene.start('BallCrushMatchmakingScene', {
-                  username: this.username,
-                  uid: this.uid,
-                  displayName: this.displayName,
-                  avatar: this.avatar
-                });
-              }
-            });
-          } else {
-            this.showError('Failed to process payment');
-          }
+          this.scene.start('BallCrushMatchmakingScene', {
+            username: this.username,
+            uid: this.uid,
+            displayName: this.displayName,
+            avatar: this.avatar
+          });
         });
 
       } else if (btn.scene) {
@@ -343,27 +321,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     });
   }
 
-  // ─── Deduct game fee ───────────────────────────────────────────────────────
-  private async deductGameFee(): Promise<boolean> {
-    if (!this.uid) return false;
-
-    try {
-      console.log('💰 Deducting 1 coin game fee for UID:', this.uid);
-
-      const success = await deductBallCrushWalletBalance(
-        this.uid,
-        1,  // positive amount only
-        'Ball Crush game entry fee'
-      );
-
-      return success;
-    } catch (error) {
-      console.error('❌ Error deducting game fee:', error);
-      return false;
-    }
-  }
-
-  // ─── Insufficient funds popup ──────────────────────────────────────────────
+  // ─── Insufficient funds popup ─────────────────────────────────────────────
   private showInsufficientFunds() {
     const popup = this.add.graphics();
     popup.fillStyle(0x000000, 0.9);
@@ -371,9 +329,9 @@ export class BallCrushStartScene extends Phaser.Scene {
     popup.lineStyle(2, 0xff0000, 1);
     popup.strokeRoundedRect(40, 200, 280, 150, 10);
 
-    const icon = this.add.text(180, 230, '⚠️', { fontSize: '40px' }).setOrigin(0.5);
-    const title = this.add.text(180, 280, 'Insufficient Coins!', { fontSize: '18px', color: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5);
-    const sub = this.add.text(180, 310, 'Need 1 coin to play', { fontSize: '14px', color: '#ffff00' }).setOrigin(0.5);
+    const icon     = this.add.text(180, 230, '⚠️', { fontSize: '40px' }).setOrigin(0.5);
+    const title    = this.add.text(180, 280, 'Insufficient Funds!', { fontSize: '18px', color: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5);
+    const sub      = this.add.text(180, 310, 'Need $1 to play', { fontSize: '14px', color: '#ffff00' }).setOrigin(0.5);
     const closeBtn = this.add.text(180, 340, 'OK', {
       fontSize: '16px', color: '#ffffff',
       backgroundColor: '#4CAF50', padding: { x: 20, y: 5 }
@@ -388,7 +346,7 @@ export class BallCrushStartScene extends Phaser.Scene {
     this.time.delayedCall(3000, destroy);
   }
 
-  // ─── Loading / error states ────────────────────────────────────────────────
+  // ─── Loading / error states ───────────────────────────────────────────────
   private showLoading() {
     this.loadingText = this.add.text(180, 320, 'LOADING...', {
       fontSize: '18px', color: '#ffff00'
@@ -419,7 +377,7 @@ export class BallCrushStartScene extends Phaser.Scene {
       });
   }
 
-  // ─── Footer ────────────────────────────────────────────────────────────────
+  // ─── Footer ───────────────────────────────────────────────────────────────
   private addFooter() {
     this.add.text(340, 628, 'Ball Crush v1.0.0', {
       fontSize: '10px', color: '#666666'
