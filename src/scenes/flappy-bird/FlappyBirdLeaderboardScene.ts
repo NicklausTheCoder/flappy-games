@@ -1,270 +1,273 @@
 import Phaser from 'phaser';
-import { getFlappyBirdLeaderboard, FlappyBirdLeaderboardEntry } from '../../firebase/flappyBirdSimple'; // Change this import
+import { getFlappyBirdLeaderboard, FlappyBirdLeaderboardEntry } from '../../firebase/flappyBirdSimple';
+
+const C = {
+  NAVY:         '#000000',
+  WHITE:        '#ffffff',
+  YELLOW:       '#ffe040',
+  GOLD:         '#ffd700',
+  MUTED:        '#cceeff',
+  PANEL_FILL:   0x000000,
+  PANEL_ALPHA:  0.48,
+  PANEL_STROKE: 0xffffff,
+  PANEL_STROKE_A: 0.65,
+};
 
 export class FlappyBirdLeaderboardScene extends Phaser.Scene {
-  private leaderboard: FlappyBirdLeaderboardEntry[] = []; // Use specific type
-  private loadingText!: Phaser.GameObjects.Text;
-  private backButton!: Phaser.GameObjects.Text;
-  private refreshButton!: Phaser.GameObjects.Text;
-  private errorText!: Phaser.GameObjects.Text;
+  private leaderboard: FlappyBirdLeaderboardEntry[] = [];
   private username: string = '';
   private uid: string = '';
-  
+  private cloudLayers: Array<Array<{ obj: Phaser.GameObjects.Graphics; speed: number }>> = [];
+
   constructor() {
     super({ key: 'FlappyBirdLeaderboardScene' });
   }
-  
+
   init(data: { username?: string; uid?: string }) {
-    console.log('🏆 LeaderboardScene initialized');
-    this.username = data?.username || '';
-    this.uid = data?.uid || '';
+    this.username    = data?.username || '';
+    this.uid         = data?.uid || '';
+    this.cloudLayers = [];
   }
-  
+
   async create() {
-    // Background
-    this.cameras.main.setBackgroundColor('#1a1a2e');
-    
-    // Title
-    this.add.text(180, 30, '🏆 FLAPPY BIRD LEADERBOARD', {
-      fontSize: '20px',
-      color: '#ffd700',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 3
-    }).setOrigin(0.5);
-    
-    // Loading
-    this.loadingText = this.add.text(180, 300, 'LOADING LEADERBOARD...', {
-      fontSize: '18px',
-      color: '#ffff00'
-    }).setOrigin(0.5);
-    
-    // Fetch leaderboard
-    await this.loadLeaderboard();
-    
-    // Create buttons
-    this.createBackButton();
-    this.createRefreshButton();
-  }
-  
-  private async loadLeaderboard() {
+    this.addBackground();
+    this.addTitle();
+
+    const loadingText = this.add.text(180, 320, 'LOADING...', {
+      fontSize: '20px', color: C.WHITE, fontStyle: 'bold',
+      stroke: C.NAVY, strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(20);
+
     try {
-      console.log('📡 Fetching Flappy Bird leaderboard...');
-      this.leaderboard = await getFlappyBirdLeaderboard(15); // Use Flappy Bird specific function
-      
-      console.log('✅ Leaderboard data:', this.leaderboard);
-      
-      this.loadingText.destroy();
-      
-      if (this.leaderboard.length === 0) {
-        this.showEmptyState();
-      } else {
-        this.displayLeaderboard();
-      }
-      
-    } catch (error) {
-      console.error('❌ Error:', error);
-      this.showError('Failed to load leaderboard');
+      this.leaderboard = await getFlappyBirdLeaderboard(15);
+      loadingText.destroy();
+      this.leaderboard.length === 0 ? this.showEmpty() : this.displayLeaderboard();
+    } catch (e) {
+      loadingText.destroy();
+      this.showError();
     }
+
+    this.addButtons();
   }
-  
+
+  update(_t: number, delta: number) {
+    const dt = delta / 1000;
+    this.cloudLayers.forEach(layer =>
+      layer.forEach(c => {
+        c.obj.x -= c.speed * dt;
+        if (c.obj.x < -150) c.obj.x = 410 + Phaser.Math.Between(0, 50);
+      })
+    );
+  }
+
+  // ─── Background ──────────────────────────────────────────────────────────
+  private addBackground() {
+    this.cameras.main.setBackgroundColor('#4EC0CA');
+    const key = this.textures.exists('background-alt') ? 'background-alt'
+              : this.textures.exists('background')      ? 'background' : null;
+    if (key) this.add.image(180, 320, key).setDisplaySize(360, 640).setDepth(-2);
+    this.spawnClouds();
+  }
+
+  private spawnClouds() {
+    const make = (defs: { x: number; y: number; w: number; h: number }[], alpha: number, speed: number) => {
+      const layer: typeof this.cloudLayers[0] = [];
+      defs.forEach(d => {
+        const g = this.add.graphics().setDepth(1);
+        g.x = d.x; g.y = d.y;
+        g.fillStyle(0xffffff, alpha);
+        g.fillEllipse(0, 0, d.w, d.h);
+        g.fillEllipse(-d.w * 0.22, -d.h * 0.38, d.w * 0.58, d.h * 0.68);
+        g.fillEllipse(d.w * 0.16, -d.h * 0.30, d.w * 0.48, d.h * 0.62);
+        layer.push({ obj: g, speed });
+      });
+      this.cloudLayers.push(layer);
+    };
+    make([{ x: 50, y: 78, w: 85, h: 24 }, { x: 210, y: 68, w: 105, h: 28 }, { x: 340, y: 88, w: 72, h: 20 }], 0.32, 6);
+    make([{ x: 110, y: 108, w: 115, h: 34 }, { x: 295, y: 98, w: 92, h: 28 }], 0.5, 14);
+  }
+
+  // ─── Title ───────────────────────────────────────────────────────────────
+  private addTitle() {
+    const p = this.add.graphics().setDepth(9);
+    p.fillStyle(C.PANEL_FILL, C.PANEL_ALPHA);
+    p.fillRoundedRect(28, 18, 304, 64, 14);
+    p.lineStyle(2, C.PANEL_STROKE, C.PANEL_STROKE_A);
+    p.strokeRoundedRect(28, 18, 304, 64, 14);
+
+    this.add.text(180, 36, '🏆  LEADERBOARD', {
+      fontSize: '26px', color: C.GOLD, fontStyle: 'bold',
+      stroke: C.NAVY, strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(10);
+
+    this.add.text(180, 66, 'TOP FLAPPY PILOTS', {
+      fontSize: '11px', color: C.WHITE,
+      stroke: C.NAVY, strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(10);
+  }
+
+  // ─── Table ───────────────────────────────────────────────────────────────
   private displayLeaderboard() {
-    let yPos = 70;
-    
-    // Headers
-    this.add.text(30, yPos, 'RANK', { 
-      fontSize: '14px', 
-      color: '#ffd700', 
-      fontStyle: 'bold' 
-    });
-    
-    this.add.text(90, yPos, 'PLAYER', { 
-      fontSize: '14px', 
-      color: '#ffd700', 
-      fontStyle: 'bold' 
-    });
-    
-    this.add.text(250, yPos, 'SCORE', { 
-      fontSize: '14px', 
-      color: '#ffd700', 
-      fontStyle: 'bold' 
-    });
-    
-    this.add.text(310, yPos, 'WINS', { // Changed from LVL to WINS
-      fontSize: '14px', 
-      color: '#ffd700', 
-      fontStyle: 'bold' 
-    });
-    
-    yPos += 25;
-    
-    // Leaderboard entries
-    this.leaderboard.forEach((entry, index) => {
-      const rank = index + 1;
-      
-      // Medal or rank number
-      let rankDisplay: string;
-      let rankColor: string;
-      
-      if (rank === 1) {
-        rankDisplay = '🥇';
-        rankColor = '#ffd700';
-      } else if (rank === 2) {
-        rankDisplay = '🥈';
-        rankColor = '#c0c0c0';
-      } else if (rank === 3) {
-        rankDisplay = '🥉';
-        rankColor = '#cd7f32';
-      } else {
-        rankDisplay = `${rank}.`;
-        rankColor = '#ffffff';
+    // Panel
+    const panelH = Math.min(this.leaderboard.length, 12) * 36 + 44;
+    const panel = this.add.graphics().setDepth(9);
+    panel.fillStyle(C.PANEL_FILL, C.PANEL_ALPHA);
+    panel.fillRoundedRect(14, 96, 332, panelH, 14);
+    panel.lineStyle(1.5, C.PANEL_STROKE, C.PANEL_STROKE_A);
+    panel.strokeRoundedRect(14, 96, 332, panelH, 14);
+
+    // Header row
+    const headers = [
+      { x: 36,  label: 'RANK'  },
+      { x: 106, label: 'PLAYER' },
+      { x: 242, label: 'SCORE' },
+      { x: 318, label: 'WINS'  },
+    ];
+    headers.forEach(h =>
+      this.add.text(h.x, 108, h.label, {
+        fontSize: '10px', color: C.MUTED,
+        stroke: C.NAVY, strokeThickness: 2,
+      }).setOrigin(0.5, 0).setDepth(10)
+    );
+
+    // Divider under header
+    const div = this.add.graphics().setDepth(10);
+    div.lineStyle(1, 0xffffff, 0.3);
+    div.lineBetween(20, 128, 340, 128);
+
+    let yPos = 136;
+    const maxRows = 12;
+
+    this.leaderboard.slice(0, maxRows).forEach((entry, i) => {
+      const rank = i + 1;
+
+      // Alternating row tint
+      if (i % 2 === 0) {
+        const rowBg = this.add.graphics().setDepth(9);
+        rowBg.fillStyle(0xffffff, 0.06);
+        rowBg.fillRect(16, yPos - 8, 328, 32);
       }
-      
-      // Row background (alternating)
-      if (index % 2 === 0) {
-        const bg = this.add.graphics();
-        bg.fillStyle(0x333333, 0.3);
-        bg.fillRect(15, yPos - 12, 330, 25);
-      }
-      
-      // Rank
-      this.add.text(30, yPos, rankDisplay, { 
-        fontSize: '16px', 
-        color: rankColor,
-        fontStyle: rank <= 3 ? 'bold' : 'normal'
-      });
-      
-      // Player name (truncate if too long)
-      let displayName = entry.displayName || entry.username;
-      if (displayName.length > 10) {
-        displayName = displayName.substring(0, 8) + '...';
-      }
-      
-      this.add.text(90, yPos, displayName, { 
-        fontSize: '14px', 
-        color: '#ffffff' 
-      });
-      
+
+      // Medal / rank
+      const medalMap: Record<number, string> = { 1: '🥇', 2: '🥈', 3: '🥉' };
+      const rankStr  = medalMap[rank] ?? `${rank}.`;
+      const rankCol  = rank === 1 ? C.GOLD : rank === 2 ? '#d0d0d0' : rank === 3 ? '#cd7f32' : C.WHITE;
+      this.add.text(36, yPos, rankStr, {
+        fontSize: rank <= 3 ? '18px' : '14px', color: rankCol,
+        stroke: C.NAVY, strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
+
+      // Name
+      let name = entry.displayName || entry.username || '—';
+      if (name.length > 10) name = name.slice(0, 9) + '…';
+      const isMe = (entry.username || '').toLowerCase() === this.username.toLowerCase();
+      this.add.text(106, yPos, name, {
+        fontSize: '13px', color: isMe ? C.YELLOW : C.WHITE,
+        fontStyle: isMe ? 'bold' : 'normal',
+        stroke: C.NAVY, strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
+
       // Score
-      this.add.text(250, yPos, entry.highScore.toString(), { 
-        fontSize: '16px', 
-        color: '#00ff00',
-        fontStyle: 'bold'
-      });
-      
-      // Wins - using totalWins from the entry
-      const wins = entry.totalWins || 0;
-      this.add.text(315, yPos, wins.toString(), { 
-        fontSize: '14px', 
-        color: wins > 0 ? '#ffff00' : '#888888' 
-      });
-      
-      yPos += 28;
-      
-      // Stop if we run out of space
-      if (yPos > 550) {
-        this.add.text(180, 570, `... and ${this.leaderboard.length - index - 1} more`, {
-          fontSize: '12px',
-          color: '#888888'
-        }).setOrigin(0.5);
-        return;
-      }
+      this.add.text(242, yPos, entry.highScore.toString(), {
+        fontSize: '15px', color: C.WHITE, fontStyle: 'bold',
+        stroke: C.NAVY, strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
+
+      // Wins
+      const wins = entry.totalWins ?? 0;
+      this.add.text(318, yPos, wins.toString(), {
+        fontSize: '13px', color: wins > 0 ? C.YELLOW : C.MUTED,
+        stroke: C.NAVY, strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
+
+      yPos += 36;
     });
-    
-    // Show total players
-    this.add.text(180, 590, `Total Players: ${this.leaderboard.length}`, {
-      fontSize: '12px',
-      color: '#666666'
-    }).setOrigin(0.5);
-  }
-  
-  private showEmptyState() {
-    this.add.text(180, 250, '📊', {
-      fontSize: '48px',
-      color: '#888888'
-    }).setOrigin(0.5);
-    
-    this.add.text(180, 300, 'No players yet', {
-      fontSize: '18px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-    
-    this.add.text(180, 330, 'Be the first to play Flappy Bird!', {
-      fontSize: '14px',
-      color: '#ffff00'
-    }).setOrigin(0.5);
-  }
-  
-  private showError(message: string) {
-    if (this.loadingText) {
-      this.loadingText.destroy();
+
+    if (this.leaderboard.length > maxRows) {
+      this.add.text(180, yPos + 8, `+ ${this.leaderboard.length - maxRows} more players`, {
+        fontSize: '11px', color: C.MUTED,
+        stroke: C.NAVY, strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
     }
-    
-    this.errorText = this.add.text(180, 250, '❌', {
-      fontSize: '48px',
-      color: '#ff0000'
-    }).setOrigin(0.5);
-    
-    this.add.text(180, 300, message, {
-      fontSize: '16px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-    
-    this.add.text(180, 350, 'Tap to retry', {
-      fontSize: '14px',
-      color: '#ffff00'
-    }).setOrigin(0.5);
-    
-    // Make screen tappable to retry
-    this.input.once('pointerdown', () => {
-      this.scene.restart({ username: this.username, uid: this.uid });
-    });
   }
-  
-  private createBackButton() {
-    this.backButton = this.add.text(50, 600, '← BACK', {
-      fontSize: '16px',
-      color: '#ffffff',
-      backgroundColor: '#4CAF50',
-      padding: { x: 12, y: 6 }
-    })
-    .setInteractive({ useHandCursor: true });
-    
-    this.backButton.on('pointerover', () => {
-      this.backButton.setStyle({ color: '#ffff00', backgroundColor: '#45a049' });
-    });
-    
-    this.backButton.on('pointerout', () => {
-      this.backButton.setStyle({ color: '#ffffff', backgroundColor: '#4CAF50' });
-    });
-    
-    this.backButton.on('pointerdown', () => {
-      this.scene.start('FlappyBirdStartScene', { 
-        username: this.username,
-        uid: this.uid 
+
+  private showEmpty() {
+    const p = this.add.graphics().setDepth(9);
+    p.fillStyle(C.PANEL_FILL, C.PANEL_ALPHA);
+    p.fillRoundedRect(40, 200, 280, 130, 14);
+    p.lineStyle(1.5, C.PANEL_STROKE, C.PANEL_STROKE_A);
+    p.strokeRoundedRect(40, 200, 280, 130, 14);
+
+    this.add.text(180, 235, '📊', { fontSize: '42px' }).setOrigin(0.5).setDepth(10);
+    this.add.text(180, 284, 'No players yet', {
+      fontSize: '17px', color: C.WHITE, fontStyle: 'bold',
+      stroke: C.NAVY, strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(10);
+    this.add.text(180, 308, 'Be the first to play!', {
+      fontSize: '12px', color: C.MUTED,
+      stroke: C.NAVY, strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(10);
+  }
+
+  private showError() {
+    const p = this.add.graphics().setDepth(9);
+    p.fillStyle(C.PANEL_FILL, C.PANEL_ALPHA);
+    p.fillRoundedRect(40, 220, 280, 120, 14);
+    p.lineStyle(1.5, C.PANEL_STROKE, C.PANEL_STROKE_A);
+    p.strokeRoundedRect(40, 220, 280, 120, 14);
+
+    this.add.text(180, 255, '❌', { fontSize: '36px' }).setOrigin(0.5).setDepth(10);
+    this.add.text(180, 298, 'Failed to load leaderboard', {
+      fontSize: '14px', color: C.WHITE,
+      stroke: C.NAVY, strokeThickness: 3, wordWrap: { width: 240 },
+    }).setOrigin(0.5).setDepth(10);
+  }
+
+  // ─── Buttons ─────────────────────────────────────────────────────────────
+  private addButtons() {
+    const hasBtn = this.textures.exists('blue-button');
+    const makeBtn = (cx: number, cy: number, label: string, cb: () => void) => {
+      const W = 140, H = 42;
+      let img: Phaser.GameObjects.Image | Phaser.GameObjects.Graphics;
+      if (hasBtn) {
+        img = this.add.image(0, 0, 'blue-button').setDisplaySize(W, H);
+      } else {
+        const g = this.add.graphics();
+        g.fillStyle(0x1255aa, 0.92);
+        g.fillRoundedRect(-W/2, -H/2, W, H, 10);
+        g.lineStyle(2, 0xffffff, 0.75);
+        g.strokeRoundedRect(-W/2, -H/2, W, H, 10);
+        img = g;
+      }
+      const lbl = this.add.text(0, 0, label, {
+        fontSize: '14px', color: C.WHITE, fontStyle: 'bold',
+        stroke: C.NAVY, strokeThickness: 1,
+      }).setOrigin(0.5);
+
+      const btn = this.add.container(cx, cy, [img as any, lbl]);
+      btn.setSize(W, H).setInteractive({ useHandCursor: true }).setDepth(20);
+
+      btn.on('pointerover', () => {
+        this.tweens.add({ targets: btn, scaleX: 1.06, scaleY: 1.06, duration: 75 });
+        lbl.setColor(C.YELLOW);
       });
-    });
-  }
-  
-  private createRefreshButton() {
-    this.refreshButton = this.add.text(180, 600, '🔄 REFRESH', {
-      fontSize: '16px',
-      color: '#ffffff',
-      backgroundColor: '#2196F3',
-      padding: { x: 12, y: 6 }
-    })
-    .setInteractive({ useHandCursor: true });
-    
-    this.refreshButton.on('pointerover', () => {
-      this.refreshButton.setStyle({ color: '#ffff00', backgroundColor: '#1976D2' });
-    });
-    
-    this.refreshButton.on('pointerout', () => {
-      this.refreshButton.setStyle({ color: '#ffffff', backgroundColor: '#2196F3' });
-    });
-    
-    this.refreshButton.on('pointerdown', () => {
-      this.scene.restart({ username: this.username, uid: this.uid });
-    });
+      btn.on('pointerout', () => {
+        this.tweens.add({ targets: btn, scaleX: 1, scaleY: 1, duration: 75 });
+        lbl.setColor(C.WHITE);
+      });
+      btn.on('pointerdown', () => {
+        this.tweens.add({ targets: btn, scaleX: 0.95, scaleY: 0.95, duration: 55, yoyo: true, onComplete: cb });
+      });
+    };
+
+    const yBtn = 598;
+    makeBtn(95,  yBtn, '← BACK',    () => this.scene.start('FlappyBirdStartScene', { username: this.username, uid: this.uid }));
+    makeBtn(265, yBtn, '🔄 REFRESH', () => this.scene.restart({ username: this.username, uid: this.uid }));
+
+    // Footer
+    this.add.text(180, 624, 'wintapgames.com  ·  v1.0.0', {
+      fontSize: '9px', color: C.WHITE,
+      stroke: C.NAVY, strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(10);
   }
 }

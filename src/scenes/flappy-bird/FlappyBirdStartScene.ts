@@ -15,7 +15,7 @@ import {
 // Strokes are always dark navy (#003366) — never green.
 // Value text is white or warm yellow — never neon green.
 const C = {
-  NAVY:        '#003366',   // stroke on all text
+  NAVY:        '#00000',   // stroke on all text
   WHITE:       '#ffffff',
   YELLOW:      '#ffe040',   // primary accent / play button tint
   GOLD:        '#ffd700',   // best score highlight
@@ -152,7 +152,7 @@ export class FlappyBirdStartScene extends Phaser.Scene {
     p.lineStyle(2, C.PANEL_STROKE, C.PANEL_STROKE_A);
     p.strokeRoundedRect(28, 18, 304, 64, 14);
 
-    this.add.text(180, 36, 'FLAPPY BIRD', {
+    this.add.text(180, 36, 'FLY BIRD', {
       fontSize: '30px', color: C.WHITE, fontStyle: 'bold',
       stroke: C.NAVY, strokeThickness: 4,
     }).setOrigin(0.5).setDepth(10);
