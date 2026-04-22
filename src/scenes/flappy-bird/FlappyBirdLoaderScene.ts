@@ -1,162 +1,294 @@
+// src/scenes/flappy-bird/FlappyBirdLoaderScene.ts
 import Phaser from 'phaser';
 
 export class FlappyBirdLoaderScene extends Phaser.Scene {
-  // Simple loading circle
-  private loadingCircle!: Phaser.GameObjects.Graphics;
-  private loadingAngle: number = 0;
-  private loadingText!: Phaser.GameObjects.Text;
-  
-  // User data received from CookieScene
   private username: string = '';
-  private uid: string = '';  // Add UID storage
-  
+  private uid: string = '';
+
+  // Animated clouds
+  private clouds: Array<{ obj: Phaser.GameObjects.Graphics; speed: number; y: number }> = [];
+
+  // Spinning bird orb
+  private birdOrb!: Phaser.GameObjects.Sprite;
+  private orbRings: Phaser.GameObjects.Graphics[] = [];
+
+  // Progress
+  private progressFill!: Phaser.GameObjects.Graphics;
+  private progressGlow!: Phaser.GameObjects.Graphics;
+  private loadingText!:  Phaser.GameObjects.Text;
+  private percentText!:  Phaser.GameObjects.Text;
+
   constructor() {
     super({ key: 'FlappyBirdLoaderScene' });
   }
-  
+
   init(data: { username: string; uid?: string }) {
-    console.log('🎬 LoaderScene initialized with data:', data);
-    
-    // Get username and UID from CookieScene
-    if (data && data.username) {
-      this.username = data.username;
-      this.uid = data.uid || '';  // Store the UID
-      console.log('👤 Username received from CookieScene:', this.username);
-      console.log('🆔 UID received from CookieScene:', this.uid);
-    } else {
-      console.error('❌ No username received!');
-      // Fallback - go back to CookieScene
-      this.scene.start('CookieScene');
-      return;
-    }
+    if (!data?.username) { this.scene.start('CookieScene'); return; }
+    this.username = data.username;
+    this.uid      = data.uid || '';
+    this.clouds   = [];
+    this.orbRings = [];
   }
-  
+
   preload() {
-    // Create loading UI with phone-optimized positions
     this.createLoadingUI();
-    
-    // Load ALL game assets
-    this.loadAssets();
+
+    this.load.on('progress', (v: number) => this.onProgress(v));
+    this.load.on('complete',  ()          => this.onComplete());
+
+    this.load.image('background',    'assets/backgrounds/bg.png');
+    this.load.image('background-alt','assets/backgrounds/bg2.jpg');
+    this.load.image('bird-frame1',   'assets/bird/frame-1.png');
+    this.load.image('bird-frame2',   'assets/bird/frame-2.png');
+    this.load.image('pipe',          'assets/pipe/pipe-green.png');
+    this.load.image('base',          'assets/base/base.png');
+    this.load.image('blue-button',   'assets/buttons/blue-button.png');
+
+    this.load.on('loaderror', (f: any) => console.warn('⚠️ Missing:', f.key));
   }
-  
-  create() {
-    console.log('✨ LoaderScene create - waiting for assets to load');
-    
-    // Set up the complete event
-    this.load.on('complete', () => {
-      console.log('✅ All assets loaded successfully!');
-      this.goToNextScene();
+
+  create() { /* onComplete fires during preload */ }
+
+  update(_t: number, delta: number) {
+    const dt = delta / 1000;
+
+    // Scroll clouds left — wrap around
+    this.clouds.forEach(c => {
+      c.obj.x -= c.speed * dt;
+      if (c.obj.x < -120) c.obj.x = 400;
     });
 
-    // If assets are already loaded
-    if (this.load.progress === 1) {
-      console.log('✅ Assets already loaded');
-      this.goToNextScene();
-    }
+    // Pulse orb rings
+    this.orbRings.forEach((ring, i) => {
+      ring.alpha = 0.15 + 0.1 * Math.sin(Date.now() / 600 + i * 1.2);
+    });
   }
-  
+
+  // ─── UI ────────────────────────────────────────────────────────────────────
   private createLoadingUI() {
-    // Dark blue background
-    this.cameras.main.setBackgroundColor('#0a0a2a');
-    
-    // Game title - centered for 360x640
-    this.add.text(180, 100, 'WINTAP GAMES', {
-      fontSize: '36px',
-      color: '#ffd700',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 5
-    }).setOrigin(0.5);
-    
-    // Loading text
-    this.loadingText = this.add.text(180, 200, 'LOADING...', {
-      fontSize: '20px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-    
-    // Show username from cookie
-    if (this.username) {
-      this.add.text(180, 260, `Hello, ${this.username}!`, {
-        fontSize: '16px',
-        color: '#ffff00'
-      }).setOrigin(0.5);
+    // Sky gradient background (bg.png is blue-to-cyan gradient)
+    // We set background color to match until texture loads
+    this.cameras.main.setBackgroundColor('#00BFFF');
+
+    // Try to show bg.png if it happens to be cached from a previous session
+    if (this.textures.exists('background')) {
+      this.add.image(180, 320, 'background').setDisplaySize(360, 640).setDepth(-2);
+    } else if (this.textures.exists('background-alt')) {
+      this.add.image(180, 320, 'background-alt').setDisplaySize(360, 640).setDepth(-2);
     }
-    
-    // Loading circle will be drawn in update()
-    this.loadingCircle = this.add.graphics();
+
+    // ── Animated pixel-style clouds ──
+    this.spawnLoadingClouds();
+
+    // ── Title panel ──
+    const titleBg = this.add.graphics().setDepth(10);
+    titleBg.fillStyle(0xffffff, 0.25);
+    titleBg.fillRoundedRect(30, 22, 300, 68, 14);
+    titleBg.lineStyle(2, 0xffffff, 0.7);
+    titleBg.strokeRoundedRect(30, 22, 300, 68, 14);
+
+    this.add.text(180, 42, 'FLAPPY BIRD', {
+      fontSize: '32px', color: '#ffffff', fontStyle: 'bold',
+      stroke: '#1a6a00', strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(11);
+
+    this.add.text(180, 74, 'ONLINE', {
+      fontSize: '13px', color: '#ffffff', letterSpacing: 8,
+      stroke: '#1a6a00', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(11);
+
+    // ── Bird spinning in centre ──
+    this.buildBirdOrb();
+
+    // ── Player greeting ──
+    const greetBg = this.add.graphics().setDepth(10);
+    greetBg.fillStyle(0xffffff, 0.3);
+    greetBg.fillRoundedRect(60, 340, 240, 46, 10);
+    greetBg.lineStyle(1.5, 0xffffff, 0.6);
+    greetBg.strokeRoundedRect(60, 340, 240, 46, 10);
+
+    this.add.text(180, 355, `Hello, ${this.username}!`, {
+      fontSize: '16px', color: '#ffffff', fontStyle: 'bold',
+      stroke: '#1a6a00', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(11);
+
+    this.add.text(180, 375, 'Loading your game...', {
+      fontSize: '11px', color: '#ffffff',
+      stroke: '#006600', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(11);
+
+    // ── Progress bar ──
+    const barY = 408;
+    const barBg = this.add.graphics().setDepth(10);
+    barBg.fillStyle(0x000000, 0.3);
+    barBg.fillRoundedRect(30, barY, 300, 22, 11);
+    barBg.lineStyle(2, 0xffffff, 0.6);
+    barBg.strokeRoundedRect(30, barY, 300, 22, 11);
+
+    this.progressGlow = this.add.graphics().setDepth(10);
+    this.progressFill = this.add.graphics().setDepth(11);
+
+    this.percentText = this.add.text(180, barY + 11, '0%', {
+      fontSize: '12px', color: '#ffffff', fontStyle: 'bold',
+      stroke: '#006600', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(12);
+
+    this.loadingText = this.add.text(180, barY + 32, 'Loading assets...', {
+      fontSize: '11px', color: '#ffffff',
+      stroke: '#006600', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(10);
+
+    // ── Tips ──
+    const tipBg = this.add.graphics().setDepth(10);
+    tipBg.fillStyle(0xffffff, 0.2);
+    tipBg.fillRoundedRect(30, 456, 300, 30, 8);
+
+    const tips = [
+      '💡 Tap or press space to flap',
+      '💡 Gap gets narrower as you score more',
+      '💡 Speed bumps every 30 seconds — watch out!',
+      '💡 Top your high score to climb the leaderboard',
+    ];
+    this.add.text(180, 471, tips[Phaser.Math.Between(0, tips.length - 1)], {
+      fontSize: '10px', color: '#ffffff',
+      stroke: '#006600', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(11);
+
+    // ── Info strip ──
+    const infoY = 500;
+    const infoBg = this.add.graphics().setDepth(10);
+    infoBg.fillStyle(0x000000, 0.25);
+    infoBg.fillRoundedRect(10, infoY, 340, 50, 10);
+
+    [
+      { x: 70,  icon: '🎮', label: 'MODE',  value: '1 Player' },
+      { x: 180, icon: '💰', label: 'ENTRY', value: '$1.00' },
+      { x: 290, icon: '🏆', label: 'PRIZE', value: 'High Score' },
+    ].forEach(s => {
+      this.add.text(s.x, infoY + 12, `${s.icon} ${s.value}`, {
+        fontSize: '12px', color: '#ffffff', fontStyle: 'bold',
+        stroke: '#006600', strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(11);
+      this.add.text(s.x, infoY + 30, s.label, {
+        fontSize: '9px', color: '#ccffcc', letterSpacing: 2,
+        stroke: '#006600', strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(11);
+    });
+
+    // Footer
+    this.add.text(180, 562, 'wintapgames.com', {
+      fontSize: '10px', color: '#ffffff',
+      stroke: '#006600', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(10);
   }
-  
-  private loadAssets() {
-    console.log('📦 Loading game assets...');
-    
-    // Backgrounds
-    this.load.image('background', 'assets/backgrounds/bg.png');
-    this.load.image('background-alt', 'assets/backgrounds/bg2.jpg');
-    
-    // Bird
-    this.load.image('bird-frame1', 'assets/bird/frame-1.png');
-    this.load.image('bird-frame2', 'assets/bird/frame-2.png');
-    
-    // Pipes
-    this.load.image('pipe', 'assets/pipe/pipe-green.png');
-    
-    // Ground
-    this.load.image('base', 'assets/base/base.png');
-  }
-  
-  private goToNextScene() {
-    console.log('🚀 Moving to StartScene with username:', this.username);
-    console.log('🆔 With UID:', this.uid);
-    
-    this.loadingText.setText('COMPLETE!');
-    this.loadingText.setColor('#00ff00');
-    
-    // Wait a moment then go to StartScene
-    this.time.delayedCall(500, () => {
-      // Fade out
-      this.cameras.main.fadeOut(500, 0, 0, 0);
-      
-      this.cameras.main.once('camerafadeoutcomplete', () => {
-        console.log('🎯 Starting StartScene with username:', this.username);
-        console.log('🆔 Passing UID:', this.uid);
-        
-        // PASS BOTH USERNAME AND UID to StartScene
-        this.scene.start('FlappyBirdStartScene', { 
-          username: this.username,
-          uid: this.uid 
+
+  // ─── Bird orb ──────────────────────────────────────────────────────────────
+  private buildBirdOrb() {
+    const cx = 180, cy = 230;
+
+    // Glowing rings
+    for (let i = 0; i < 3; i++) {
+      const r = this.add.graphics().setDepth(8);
+      r.lineStyle(2, 0xffffff, 0.2);
+      r.strokeCircle(cx, cy, 52 + i * 18);
+      this.orbRings.push(r);
+    }
+
+    // White cloud-like orb behind bird
+    const orb = this.add.graphics().setDepth(9);
+    orb.fillStyle(0xffffff, 0.9);
+    orb.fillCircle(cx, cy, 44);
+    orb.lineStyle(3, 0x88ddff, 0.8);
+    orb.strokeCircle(cx, cy, 44);
+
+    this.tweens.add({
+      targets: orb, scaleX: 1.06, scaleY: 1.06,
+      duration: 1000, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    });
+
+    // Bird sprite or fallback emoji
+    if (this.textures.exists('bird-frame1')) {
+      this.birdOrb = this.add.sprite(cx, cy, 'bird-frame1').setScale(0.15).setDepth(10);
+      if (!this.anims.exists('fly-load')) {
+        this.anims.create({
+          key: 'fly-load',
+          frames: [{ key: 'bird-frame1' }, { key: 'bird-frame2' }],
+          frameRate: 6, repeat: -1,
         });
+      }
+      this.birdOrb.play('fly-load');
+      this.tweens.add({ targets: this.birdOrb, y: cy - 8, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    } else {
+      this.add.text(cx, cy, '🐦', { fontSize: '40px' }).setOrigin(0.5).setDepth(10);
+    }
+  }
+
+  // ─── Clouds ────────────────────────────────────────────────────────────────
+  private spawnLoadingClouds() {
+    const cloudDefs = [
+      { x: 60,  y: 110, w: 90,  h: 28, alpha: 0.55, speed: 12 },
+      { x: 220, y: 95,  w: 110, h: 32, alpha: 0.45, speed: 8  },
+      { x: 320, y: 120, w: 70,  h: 22, alpha: 0.5,  speed: 15 },
+      { x: 10,  y: 140, w: 80,  h: 24, alpha: 0.4,  speed: 10 },
+      { x: 160, y: 160, w: 100, h: 28, alpha: 0.35, speed: 6  },
+      { x: 360, y: 105, w: 85,  h: 26, alpha: 0.5,  speed: 11 },
+    ];
+
+    cloudDefs.forEach(def => {
+      const g = this.add.graphics().setDepth(2);
+      g.x = def.x; g.y = def.y;
+
+      // Simple puffy cloud shape
+      g.fillStyle(0xffffff, def.alpha);
+      g.fillEllipse(0, 0, def.w, def.h);
+      g.fillEllipse(-def.w * 0.2, -def.h * 0.3, def.w * 0.6, def.h * 0.7);
+      g.fillEllipse(def.w * 0.15, -def.h * 0.25, def.w * 0.5, def.h * 0.6);
+
+      this.clouds.push({ obj: g, speed: def.speed, y: def.y });
+    });
+  }
+
+  // ─── Progress events ───────────────────────────────────────────────────────
+  private onProgress(v: number) {
+    const pct  = Math.round(v * 100);
+    const barY = 408, barW = 300;
+    const fill = Math.max(barW * v, v > 0 ? 22 : 0);
+
+    this.progressGlow.clear();
+    this.progressGlow.fillStyle(0xffffff, 0.3);
+    this.progressGlow.fillRoundedRect(30, barY - 2, fill, 26, 11);
+
+    this.progressFill.clear();
+    this.progressFill.fillStyle(0x33cc33, 1);
+    this.progressFill.fillRoundedRect(30, barY, fill, 22, 11);
+
+    this.percentText?.setText(`${pct}%`);
+
+    const msgs: Record<number, string> = {
+      10: 'Loading sky...', 30: 'Loading bird...', 55: 'Loading pipes...',
+      75: 'Loading ground...', 90: 'Almost ready!', 100: '✅ Ready!',
+    };
+    const m = [10,30,55,75,90,100].find(n => pct >= n);
+    if (m && msgs[m]) this.loadingText?.setText(msgs[m]);
+  }
+
+  private onComplete() {
+    this.progressFill.clear();
+    this.progressFill.fillStyle(0x33ee33, 1);
+    this.progressFill.fillRoundedRect(30, 408, 300, 22, 11);
+    this.loadingText?.setText('✅ Ready!');
+    this.percentText?.setText('100%');
+
+    this.time.delayedCall(500, () => {
+      this.cameras.main.fadeOut(400, 255, 255, 255); // fade to white — brighter feel
+      this.cameras.main.once('camerafadeoutcomplete', () => {
+        this.scene.start('FlappyBirdStartScene', { username: this.username, uid: this.uid });
       });
     });
   }
-  
-  update() {
-    // Draw spinning circle
-    this.loadingCircle.clear();
-    
-    // Center coordinates for 360x640 screen
-    const centerX = 180;
-    const centerY = 320;
-    const radius = 25;
-    
-    // Draw outer circle
-    this.loadingCircle.lineStyle(3, 0xffd700, 1);
-    this.loadingCircle.beginPath();
-    this.loadingCircle.arc(centerX, centerY, radius, 0, Math.PI * 2);
-    this.loadingCircle.strokePath();
-    
-    // Draw spinning arc
-    this.loadingCircle.beginPath();
-    this.loadingCircle.arc(
-      centerX, 
-      centerY, 
-      radius, 
-      (this.loadingAngle - 30) * Math.PI / 180, 
-      this.loadingAngle * Math.PI / 180
-    );
-    this.loadingCircle.strokePath();
-    
-    // Rotate
-    this.loadingAngle += 3;
-    if (this.loadingAngle > 360) this.loadingAngle -= 360;
+
+  shutdown() {
+    this.load.off('progress');
+    this.load.off('complete');
   }
 }

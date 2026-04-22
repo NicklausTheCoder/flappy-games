@@ -13,11 +13,9 @@ export interface BallCrushUserData {
   rank: string;
   level: number;
   createdAt: string;
-
   totalWinnings: number;
   winningsCount: number;
   lastWinDate?: string;
-
   highScore: number;
   totalGames: number;
   totalWins: number;
@@ -28,14 +26,12 @@ export interface BallCrushUserData {
   averageScore: number;
   experience: number;
   achievements: string[];
-
   balance: number;
   totalDeposited: number;
   totalWithdrawn: number;
   totalWon: number;
   totalLost: number;
   totalBonus: number;
-
   lastLogin: string;
   isActive: boolean;
 }
@@ -88,20 +84,18 @@ function getDefaultBallCrushUserData(username: string): BallCrushUserData {
     totalLost: 0,
     totalBonus: 10.00,
     lastLogin: new Date().toISOString(),
-    isActive: true
+    isActive: true,
   };
 }
 
 // =========== WALLET SHAPE NORMALISER ===========
 //
 // Firebase can give us three different shapes at wallets/{uid}:
-//
 //   A) Object  { balance: 5, totalDeposited: 0, ... }  ← normal
 //   B) Number  5                                        ← legacy / bad write
 //   C) null                                             ← new user
 //
-// runTransaction receives raw DB data so we MUST handle all three
-// before ever touching .balance.
+// runTransaction receives raw DB data so we MUST handle all three.
 
 function normaliseWallet(raw: any): Record<string, any> & { balance: number } {
   if (typeof raw === 'number') {
@@ -115,7 +109,7 @@ function normaliseWallet(raw: any): Record<string, any> & { balance: number } {
       totalGameFees: 0,
       totalRefunds: 0,
       currency: 'USD',
-      isActive: true
+      isActive: true,
     };
   }
 
@@ -130,7 +124,7 @@ function normaliseWallet(raw: any): Record<string, any> & { balance: number } {
       totalGameFees: 0,
       totalRefunds: 0,
       currency: 'USD',
-      isActive: true
+      isActive: true,
     };
   }
 
@@ -145,19 +139,33 @@ function normaliseWallet(raw: any): Record<string, any> & { balance: number } {
     totalGameFees:  raw.totalGameFees  ?? 0,
     totalRefunds:   raw.totalRefunds   ?? 0,
     currency:       raw.currency       ?? 'USD',
-    isActive:       raw.isActive       ?? true
+    isActive:       raw.isActive       ?? true,
   };
 }
 
 // =========== GET BALANCE ===========
+//
+// Single source of truth: wallets/{uid}.
+// Falls back to users/{uid}/wallet only if the primary path doesn't exist.
 
 export async function getBallCrushBalance(uid: string): Promise<number> {
   try {
-    const snapshot = await get(ref(db, `wallets/${uid}`));
-    if (!snapshot.exists()) return 0;
-    const wallet = normaliseWallet(snapshot.val());
-    console.log(`💰 Balance for ${uid}: $${wallet.balance}`);
-    return wallet.balance;
+    const primary = await get(ref(db, `wallets/${uid}`));
+    if (primary.exists()) {
+      const balance = normaliseWallet(primary.val()).balance;
+      console.log(`💰 Balance for ${uid}: $${balance}`);
+      return balance;
+    }
+
+    // Fallback for accounts that only have the secondary path
+    const secondary = await get(ref(db, `users/${uid}/wallet`));
+    if (secondary.exists()) {
+      const balance = normaliseWallet(secondary.val()).balance;
+      console.log(`💰 Balance (fallback) for ${uid}: $${balance}`);
+      return balance;
+    }
+
+    return 0;
   } catch (error) {
     console.error('Error getting balance:', error);
     return 0;
@@ -166,8 +174,15 @@ export async function getBallCrushBalance(uid: string): Promise<number> {
 
 // =========== UPDATE WALLET BALANCE (fully atomic) ===========
 //
-// Mirrors updateCheckersWalletBalance exactly.
-// Use this for ALL balance changes: game_fee, refund, win, loss, etc.
+// Strategy:
+//   1. PRIMARY path is wallets/{uid} — always the source of truth.
+//   2. SECONDARY path users/{uid}/wallet is kept in sync with a targeted
+//      update() after the primary transaction commits — only the balance
+//      field is touched, so no stat fields are destroyed.
+//   3. If the primary path doesn't exist we fall back to the secondary.
+//      This handles legacy accounts created before the wallets/ path existed.
+//
+// ALL balance changes go through here: game_fee, refund, win, etc.
 
 export async function updateBallCrushWalletBalance(
   uid: string,
@@ -187,122 +202,117 @@ export async function updateBallCrushWalletBalance(
 
   console.log(`💰 Wallet txn — uid=${uid} type=${type} signedAmount=${signedAmount}`);
 
-  const walletPaths = [`wallets/${uid}`, `users/${uid}/wallet`];
+  // Determine which path actually holds the wallet
+  const primarySnap = await get(ref(db, `wallets/${uid}`));
+  const walletPath  = primarySnap.exists()
+    ? `wallets/${uid}`
+    : `users/${uid}/wallet`;
 
-  for (const walletPath of walletPaths) {
-    const walletRef = ref(db, walletPath);
+  // Pre-flight balance check (avoids unnecessary transaction round-trips)
+  if (isDeduction) {
+    const checkSnap = primarySnap.exists()
+      ? primarySnap
+      : await get(ref(db, walletPath));
 
-    // Quick existence + funds check before entering transaction
-    const checkSnapshot = await get(walletRef);
-    if (!checkSnapshot.exists()) {
-      console.log(`   Path ${walletPath} doesn't exist, trying next...`);
-      continue;
-    }
-
-    const currentBalance = normaliseWallet(checkSnapshot.val()).balance;
-    if (isDeduction && currentBalance < magnitude) {
-      console.log(`❌ Insufficient funds at ${walletPath}: have $${currentBalance}, need $${magnitude}`);
+    if (!checkSnap.exists()) {
+      console.log(`❌ Wallet not found at ${walletPath}`);
       return false;
     }
 
-    let insufficientFunds = false;
-    let finalBalance = 0;
-
-    try {
-      const result = await runTransaction(walletRef, (rawData) => {
-        insufficientFunds = false;
-
-        const wallet = normaliseWallet(rawData);
-        const currentBalance = wallet.balance;
-
-        console.log(`   [txn at ${walletPath}] currentBalance=${currentBalance}, needed=${magnitude}`);
-
-        if (rawData === null) {
-          // Verified existence above but got null inside txn — return normalised shell
-          return wallet;
-        }
-
-        if (isDeduction && currentBalance < magnitude) {
-          insufficientFunds = true;
-          return undefined; // abort
-        }
-
-        const newBalance = currentBalance + signedAmount;
-        if (newBalance < 0) {
-          insufficientFunds = true;
-          return undefined; // abort
-        }
-
-        switch (type) {
-          case 'win':        wallet.totalWon       = (wallet.totalWon       ?? 0) + magnitude; break;
-          case 'loss':       wallet.totalLost      = (wallet.totalLost      ?? 0) + magnitude; break;
-          case 'deposit':    wallet.totalDeposited = (wallet.totalDeposited ?? 0) + magnitude; break;
-          case 'withdrawal': wallet.totalWithdrawn = (wallet.totalWithdrawn ?? 0) + magnitude; break;
-          case 'bonus':      wallet.totalBonus     = (wallet.totalBonus     ?? 0) + magnitude; break;
-          case 'game_fee':   wallet.totalGameFees  = (wallet.totalGameFees  ?? 0) + magnitude; break;
-          case 'refund':     wallet.totalRefunds   = (wallet.totalRefunds   ?? 0) + magnitude; break;
-        }
-
-        wallet.balance = newBalance;
-        wallet.lastUpdated = new Date().toISOString();
-        finalBalance = newBalance;
-
-        return wallet;
-      });
-
-      if (insufficientFunds) {
-        console.log(`❌ Txn aborted: insufficient funds at ${walletPath}`);
-        continue;
-      }
-
-      if (!result.committed && !insufficientFunds) {
-        console.error(`❌ Wallet transaction failed to commit at ${walletPath}`);
-        continue;
-      }
-
-      console.log(`✅ Wallet committed at ${walletPath} — new balance: $${finalBalance.toFixed(2)}`);
-
-      // Keep the other location in sync (best-effort)
-      const otherPath = walletPath === `wallets/${uid}` ? `users/${uid}/wallet` : `wallets/${uid}`;
-      try {
-        await set(ref(db, otherPath), {
-          balance: finalBalance,
-          lastUpdated: new Date().toISOString()
-        });
-        console.log(`   Synced balance to ${otherPath}`);
-      } catch (syncError) {
-        console.warn(`   Could not sync to ${otherPath}:`, syncError);
-      }
-
-      // Log transaction
-      try {
-        await set(push(ref(db, `transactions/${uid}`)), {
-          type,
-          amount: signedAmount,
-          balanceAfter: finalBalance,
-          description,
-          timestamp: new Date().toISOString()
-        });
-      } catch (logError) {
-        console.warn('⚠️ Transaction log write failed:', logError);
-      }
-
-      return true;
-
-    } catch (error) {
-      console.error(`❌ Wallet transaction threw at ${walletPath}:`, error);
-      continue;
+    const currentBalance = normaliseWallet(checkSnap.val()).balance;
+    if (currentBalance < magnitude) {
+      console.log(`❌ Insufficient funds: have $${currentBalance}, need $${magnitude}`);
+      return false;
     }
   }
 
-  console.error(`❌ All wallet paths failed for uid ${uid}`);
-  return false;
+  const walletRef = ref(db, walletPath);
+  let insufficientFunds = false;
+  let finalBalance = 0;
+
+  try {
+    const result = await runTransaction(walletRef, (rawData) => {
+      insufficientFunds = false;
+
+      const wallet = normaliseWallet(rawData);
+
+      // rawData===null means the node was deleted between our read and the txn.
+      // Return the normalised shell so Firebase creates it rather than aborting.
+      if (rawData === null) return wallet;
+
+      if (isDeduction && wallet.balance < magnitude) {
+        insufficientFunds = true;
+        return undefined; // abort
+      }
+
+      const newBalance = wallet.balance + signedAmount;
+      if (newBalance < 0) {
+        insufficientFunds = true;
+        return undefined; // abort
+      }
+
+      // Update running totals
+      switch (type) {
+        case 'win':        wallet.totalWon       = (wallet.totalWon       ?? 0) + magnitude; break;
+        case 'loss':       wallet.totalLost      = (wallet.totalLost      ?? 0) + magnitude; break;
+        case 'deposit':    wallet.totalDeposited = (wallet.totalDeposited ?? 0) + magnitude; break;
+        case 'withdrawal': wallet.totalWithdrawn = (wallet.totalWithdrawn ?? 0) + magnitude; break;
+        case 'bonus':      wallet.totalBonus     = (wallet.totalBonus     ?? 0) + magnitude; break;
+        case 'game_fee':   wallet.totalGameFees  = (wallet.totalGameFees  ?? 0) + magnitude; break;
+        case 'refund':     wallet.totalRefunds   = (wallet.totalRefunds   ?? 0) + magnitude; break;
+      }
+
+      wallet.balance     = newBalance;
+      wallet.lastUpdated = new Date().toISOString();
+      finalBalance       = newBalance;
+
+      return wallet;
+    });
+
+    if (insufficientFunds) {
+      console.log(`❌ Txn aborted: insufficient funds`);
+      return false;
+    }
+
+    if (!result.committed) {
+      console.error(`❌ Wallet transaction failed to commit`);
+      return false;
+    }
+
+    console.log(`✅ Wallet committed — new balance: $${finalBalance.toFixed(2)}`);
+
+    // ── Sync secondary path ──────────────────────────────────────────────────
+    // Only update the balance + lastUpdated fields — never overwrite stat
+    // fields on the secondary copy (they may be more up-to-date than our view).
+    const secondaryPath = walletPath === `wallets/${uid}`
+      ? `users/${uid}/wallet`
+      : `wallets/${uid}`;
+
+    update(ref(db, secondaryPath), {
+      balance:     finalBalance,
+      lastUpdated: new Date().toISOString(),
+    }).catch((err) => console.warn(`⚠️ Secondary sync failed (${secondaryPath}):`, err));
+
+    // ── Log transaction ──────────────────────────────────────────────────────
+    set(push(ref(db, `transactions/${uid}`)), {
+      type,
+      amount:       signedAmount,
+      balanceAfter: finalBalance,
+      description,
+      timestamp:    new Date().toISOString(),
+    }).catch((err) => console.warn('⚠️ Transaction log write failed:', err));
+
+    return true;
+
+  } catch (error) {
+    console.error(`❌ Wallet transaction threw:`, error);
+    return false;
+  }
 }
 
-// =========== LEGACY DEDUCT (kept for any callers not yet migrated) ===========
-//
-// Wraps the new atomic function. New code should call updateBallCrushWalletBalance
-// directly with type='game_fee'.
+// =========== LEGACY DEDUCT ===========
+// Kept for callers not yet migrated. New code should call
+// updateBallCrushWalletBalance directly with type='game_fee'.
 
 export async function deductBallCrushWalletBalance(
   uid: string,
@@ -331,18 +341,18 @@ export async function getBallCrushUserData(uid: string): Promise<BallCrushUserDa
     const gameStats = userData.games?.['ball-crush'] || {
       highScore: 0, totalGames: 0, totalWins: 0, totalLosses: 0,
       winStreak: 0, bestWinStreak: 0, totalScore: 0, averageScore: 0,
-      experience: 0, achievements: []
+      experience: 0, achievements: [],
     };
 
     const winnings = userData.winnings || { total: 0, count: 0 };
 
     return {
-      username:     userData.public?.username    || 'Player',
-      displayName:  userData.public?.displayName || 'Player',
-      avatar:       userData.public?.avatar      || 'default',
-      rank:         userData.public?.globalRank  || 'Bronze',
-      level:        userData.public?.globalLevel || 1,
-      createdAt:    userData.metadata?.createdAt || new Date().toISOString(),
+      username:      userData.public?.username    || 'Player',
+      displayName:   userData.public?.displayName || 'Player',
+      avatar:        userData.public?.avatar      || 'default',
+      rank:          userData.public?.globalRank  || 'Bronze',
+      level:         userData.public?.globalLevel || 1,
+      createdAt:     userData.metadata?.createdAt || new Date().toISOString(),
       totalWinnings: winnings.total || 0,
       winningsCount: winnings.count || 0,
       lastWinDate:   winnings.lastWin,
@@ -363,7 +373,7 @@ export async function getBallCrushUserData(uid: string): Promise<BallCrushUserDa
       totalLost:      userData.wallet?.totalLost      || 0,
       totalBonus:     userData.wallet?.totalBonus     || 0,
       lastLogin:      userData.private?.lastLogin     || new Date().toISOString(),
-      isActive:       userData.public?.isOnline       || false
+      isActive:       userData.public?.isOnline       || false,
     };
 
   } catch (error) {
@@ -385,7 +395,7 @@ export async function updateBallCrushProfileStats(
 
     const [userSnapshot, profileSnapshot] = await Promise.all([
       get(ref(db, `users/${uid}`)),
-      get(ref(db, `user_profiles/${uid}`))
+      get(ref(db, `user_profiles/${uid}`)),
     ]);
 
     let currentStats: any = {};
@@ -395,29 +405,28 @@ export async function updateBallCrushProfileStats(
     }
 
     if (profileSnapshot.exists()) {
-      const profileData = profileSnapshot.val();
+      const p = profileSnapshot.val();
       currentStats = {
         ...currentStats,
-        highScore:     profileData.highScore     || 0,
-        totalGames:    profileData.totalGames    || 0,
-        totalWins:     profileData.totalWins     || 0,
-        totalLosses:   profileData.totalLosses   || 0,
-        winStreak:     profileData.winStreak     || 0,
-        bestWinStreak: profileData.bestWinStreak || 0,
-        displayName:   profileData.displayName,
-        avatar:        profileData.avatar
+        highScore:     p.highScore     || 0,
+        totalGames:    p.totalGames    || 0,
+        totalWins:     p.totalWins     || 0,
+        totalLosses:   p.totalLosses   || 0,
+        winStreak:     p.winStreak     || 0,
+        bestWinStreak: p.bestWinStreak || 0,
+        displayName:   p.displayName,
+        avatar:        p.avatar,
       };
     }
 
-    const newTotalGames   = (currentStats.totalGames  || 0) + 1;
-    const newTotalScore   = (currentStats.totalScore  || 0) + score;
-    const newAverageScore = Math.floor(newTotalScore / newTotalGames);
-    const newHighScore    = Math.max(currentStats.highScore || 0, score);
-
-    let newTotalWins     = currentStats.totalWins     || 0;
-    let newTotalLosses   = currentStats.totalLosses   || 0;
-    let newWinStreak     = currentStats.winStreak     || 0;
-    let newBestWinStreak = currentStats.bestWinStreak || 0;
+    const newTotalGames    = (currentStats.totalGames  || 0) + 1;
+    const newTotalScore    = (currentStats.totalScore  || 0) + score;
+    const newAverageScore  = Math.floor(newTotalScore / newTotalGames);
+    const newHighScore     = Math.max(currentStats.highScore || 0, score);
+    let newTotalWins       = currentStats.totalWins     || 0;
+    let newTotalLosses     = currentStats.totalLosses   || 0;
+    let newWinStreak       = currentStats.winStreak     || 0;
+    let newBestWinStreak   = currentStats.bestWinStreak || 0;
 
     if (won) {
       newTotalWins++;
@@ -428,7 +437,9 @@ export async function updateBallCrushProfileStats(
       newWinStreak = 0;
     }
 
-    const winRate = newTotalGames > 0 ? Math.round((newTotalWins / newTotalGames) * 100) : 0;
+    const winRate = newTotalGames > 0
+      ? Math.round((newTotalWins / newTotalGames) * 100)
+      : 0;
 
     let newRank = 'Bronze';
     if      (newHighScore >= 1000 || newTotalWins >= 50) newRank = 'Diamond';
@@ -444,7 +455,7 @@ export async function updateBallCrushProfileStats(
       winStreak: newWinStreak, bestWinStreak: newBestWinStreak,
       totalScore: newTotalScore, averageScore: newAverageScore,
       rank: newRank, level: newLevel, winRate,
-      lastPlayed: new Date().toISOString()
+      lastPlayed: new Date().toISOString(),
     };
 
     await update(ref(db, `users/${uid}/games/ball-crush`), updates);
@@ -464,7 +475,7 @@ export async function updateBallCrushProfileStats(
       rank:          newRank,
       level:         newLevel,
       winRate,
-      lastUpdated: new Date().toISOString()
+      lastUpdated: new Date().toISOString(),
     });
 
     console.log(`✅ Profile stats updated:`, updates);
@@ -476,34 +487,35 @@ export async function updateBallCrushProfileStats(
 
 export async function getBallCrushProfileStats(uid: string): Promise<any> {
   try {
-    const profileRef = ref(db, `user_profiles/${uid}`);
-    const snapshot = await get(profileRef);
-    if (snapshot.exists()) return snapshot.val();
+    const profileSnap = await get(ref(db, `user_profiles/${uid}`));
+    if (profileSnap.exists()) return profileSnap.val();
 
-    const gamesSnapshot = await get(ref(db, `users/${uid}/games/ball-crush`));
-    return gamesSnapshot.exists() ? gamesSnapshot.val() : null;
+    const gamesSnap = await get(ref(db, `users/${uid}/games/ball-crush`));
+    return gamesSnap.exists() ? gamesSnap.val() : null;
   } catch (error) {
     console.error('Error getting profile stats:', error);
     return null;
   }
 }
 
-export async function getBallCrushLeaderboard(limit: number = 10): Promise<BallCrushLeaderboardEntry[]> {
+export async function getBallCrushLeaderboard(
+  limit: number = 10
+): Promise<BallCrushLeaderboardEntry[]> {
   try {
     const snapshot = await get(ref(db, 'user_profiles'));
     if (!snapshot.exists()) return [];
 
     const leaderboard: BallCrushLeaderboardEntry[] = [];
     snapshot.forEach((child) => {
-      const data = child.val();
+      const d = child.val();
       leaderboard.push({
-        username:    data.username    || 'unknown',
-        displayName: data.displayName || 'Unknown',
-        highScore:   data.highScore   || 0,
-        rank:        data.rank        || 'Bronze',
-        level:       data.level       || 1,
-        totalWins:   data.totalWins   || 0,
-        winRate:     data.winRate     || 0
+        username:    d.username    || 'unknown',
+        displayName: d.displayName || 'Unknown',
+        highScore:   d.highScore   || 0,
+        rank:        d.rank        || 'Bronze',
+        level:       d.level       || 1,
+        totalWins:   d.totalWins   || 0,
+        winRate:     d.winRate     || 0,
       });
     });
 
@@ -519,11 +531,11 @@ export async function getBallCrushLeaderboard(limit: number = 10): Promise<BallC
 
 export async function getBallCrushWinnings(uid: string): Promise<number> {
   try {
-    const snapshot = await get(ref(db, `users/${uid}/winnings/total`));
-    if (snapshot.exists()) return snapshot.val();
+    const snap = await get(ref(db, `users/${uid}/winnings/total`));
+    if (snap.exists()) return snap.val();
 
-    const altSnapshot = await get(ref(db, `winnings/${uid}/total`));
-    return altSnapshot.exists() ? altSnapshot.val() : 0;
+    const alt = await get(ref(db, `winnings/${uid}/total`));
+    return alt.exists() ? alt.val() : 0;
   } catch (error) {
     console.error('Error getting winnings:', error);
     return 0;
@@ -532,8 +544,8 @@ export async function getBallCrushWinnings(uid: string): Promise<number> {
 
 export async function getBallCrushWinCount(uid: string): Promise<number> {
   try {
-    const snapshot = await get(ref(db, `users/${uid}/winnings/count`));
-    return snapshot.exists() ? snapshot.val() : 0;
+    const snap = await get(ref(db, `users/${uid}/winnings/count`));
+    return snap.exists() ? snap.val() : 0;
   } catch (error) {
     console.error('Error getting win count:', error);
     return 0;
@@ -550,27 +562,24 @@ export async function saveBallCrushScore(
   try {
     console.log(`💾 Saving Ball Crush score for ${username}: ${score}`);
 
-    const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
-    const lookupSnapshot = await get(lookupRef);
-
-    if (!lookupSnapshot.exists()) {
+    const lookupSnap = await get(ref(db, `lookups/byUsername/${username.toLowerCase()}`));
+    if (!lookupSnap.exists()) {
       console.error('❌ User not found in lookup');
       return false;
     }
 
-    const uid = lookupSnapshot.val();
+    const uid       = lookupSnap.val();
     const timestamp = Date.now();
 
-    const newScoreRef = push(ref(db, `users/${uid}/scores`));
-    await set(newScoreRef, {
+    await set(push(ref(db, `users/${uid}/scores`)), {
       score,
       won,
       timestamp,
       date: new Date(timestamp).toISOString(),
-      game: 'ball-crush'
+      game: 'ball-crush',
     });
 
-    console.log('✅ Ball Crush score saved with ID:', newScoreRef.key);
+    console.log('✅ Ball Crush score saved');
     return true;
 
   } catch (error) {
@@ -589,34 +598,31 @@ export async function updateBallCrushStats(
   try {
     console.log(`📊 Updating Ball Crush stats for ${username}: score=${score}, won=${won}`);
 
-    const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
-    const lookupSnapshot = await get(lookupRef);
-
-    if (!lookupSnapshot.exists()) {
+    const lookupSnap = await get(ref(db, `lookups/byUsername/${username.toLowerCase()}`));
+    if (!lookupSnap.exists()) {
       console.error('❌ User not found');
       return;
     }
 
-    const uid = lookupSnapshot.val();
-
+    const uid      = lookupSnap.val();
     const statsRef = ref(db, `users/${uid}/games/ball-crush`);
-    const statsSnapshot = await get(statsRef);
+    const statsSnap = await get(statsRef);
 
-    let currentStats = statsSnapshot.exists() ? statsSnapshot.val() : {
+    const currentStats = statsSnap.exists() ? statsSnap.val() : {
       highScore: 0, totalGames: 0, totalWins: 0, totalLosses: 0,
       winStreak: 0, bestWinStreak: 0, experience: 0, level: 1,
       rank: 'Rookie', achievements: [], averageScore: 0, totalScore: 0,
-      gamesWon: 0, gamesLost: 0
+      gamesWon: 0, gamesLost: 0,
     };
 
-    const newTotalGames   = (currentStats.totalGames  || 0) + 1;
-    const newTotalScore   = (currentStats.totalScore  || 0) + score;
-    const newAverageScore = Math.floor(newTotalScore / newTotalGames);
-    const newHighScore    = Math.max(currentStats.highScore || 0, score);
-    const newWinStreak    = won ? (currentStats.winStreak || 0) + 1 : 0;
+    const newTotalGames    = (currentStats.totalGames  || 0) + 1;
+    const newTotalScore    = (currentStats.totalScore  || 0) + score;
+    const newAverageScore  = Math.floor(newTotalScore / newTotalGames);
+    const newHighScore     = Math.max(currentStats.highScore || 0, score);
+    const newWinStreak     = won ? (currentStats.winStreak || 0) + 1 : 0;
     const newBestWinStreak = Math.max(currentStats.bestWinStreak || 0, newWinStreak);
-    const newExperience   = (currentStats.experience || 0) + (won ? 100 : 10);
-    const newLevel        = Math.floor(1 + newExperience / 100);
+    const newExperience    = (currentStats.experience || 0) + (won ? 100 : 10);
+    const newLevel         = Math.floor(1 + newExperience / 100);
 
     let newRank = 'Rookie';
     if      (newLevel >= 50) newRank = 'Diamond';
@@ -630,12 +636,12 @@ export async function updateBallCrushStats(
       totalScore: newTotalScore, averageScore: newAverageScore,
       winStreak: newWinStreak, bestWinStreak: newBestWinStreak,
       experience: newExperience, level: newLevel, rank: newRank,
-      lastPlayed: new Date().toISOString()
+      lastPlayed: new Date().toISOString(),
     };
 
     if (won) {
-      updates.totalWins  = (currentStats.totalWins  || 0) + 1;
-      updates.gamesWon   = (currentStats.gamesWon   || 0) + 1;
+      updates.totalWins = (currentStats.totalWins || 0) + 1;
+      updates.gamesWon  = (currentStats.gamesWon  || 0) + 1;
     } else {
       updates.totalLosses = (currentStats.totalLosses || 0) + 1;
       updates.gamesLost   = (currentStats.gamesLost   || 0) + 1;
@@ -646,8 +652,8 @@ export async function updateBallCrushStats(
     const playTimeSnap = await get(ref(db, `users/${uid}/metadata/totalPlayTime`));
     await update(ref(db, `users/${uid}/metadata`), {
       lastGamePlayed: 'ball-crush',
-      totalPlayTime: (playTimeSnap.val() || 0) + 1,
-      updatedAt: new Date().toISOString()
+      totalPlayTime:  (playTimeSnap.val() || 0) + 1,
+      updatedAt:      new Date().toISOString(),
     });
 
     console.log('✅ Ball Crush stats updated successfully');
@@ -662,8 +668,8 @@ export async function updateBallCrushStats(
 export async function getBallCrushPlayerRank(username: string): Promise<number> {
   try {
     const leaderboard = await getBallCrushLeaderboard(100);
-    const index = leaderboard.findIndex(entry => entry.username === username);
-    return index + 1;
+    const index = leaderboard.findIndex((e) => e.username === username);
+    return index === -1 ? 999 : index + 1;
   } catch (error) {
     console.error('❌ Error getting Ball Crush player rank:', error);
     return 999;
@@ -672,38 +678,40 @@ export async function getBallCrushPlayerRank(username: string): Promise<number> 
 
 // =========== GET USER SCORES ===========
 
-export async function getBallCrushUserScores(username: string, limit: number = 10): Promise<BallCrushScoreEntry[]> {
+export async function getBallCrushUserScores(
+  username: string,
+  limit: number = 10
+): Promise<BallCrushScoreEntry[]> {
   try {
     console.log(`📊 Fetching Ball Crush scores for: ${username}`);
 
-    const lookupRef = ref(db, `lookups/byUsername/${username.toLowerCase()}`);
-    const lookupSnapshot = await get(lookupRef);
-
-    if (!lookupSnapshot.exists()) {
+    const lookupSnap = await get(ref(db, `lookups/byUsername/${username.toLowerCase()}`));
+    if (!lookupSnap.exists()) {
       console.log('❌ User not found in lookup');
       return [];
     }
 
-    const uid = lookupSnapshot.val();
-    const scoresSnapshot = await get(ref(db, `users/${uid}/scores`));
+    const uid        = lookupSnap.val();
+    const scoresSnap = await get(ref(db, `users/${uid}/scores`));
 
-    if (!scoresSnapshot.exists()) {
-      console.log('📝 No Ball Crush scores found for user');
+    if (!scoresSnap.exists()) {
+      console.log('📝 No Ball Crush scores found');
       return [];
     }
 
-    const scores: BallCrushScoreEntry[] = Object.entries(scoresSnapshot.val())
+    const scores: BallCrushScoreEntry[] = Object.entries(scoresSnap.val())
       .map(([id, data]: [string, any]) => ({
         id,
-        date: new Date(data.timestamp).toLocaleDateString(),
-        score: data.score,
-        won: data.won,
-        timestamp: data.timestamp
+        date:      new Date(data.timestamp).toLocaleDateString(),
+        score:     data.score,
+        won:       data.won,
+        timestamp: data.timestamp,
+        game:      data.game,
       }))
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, limit);
 
-    console.log(`✅ Found ${scores.length} Ball Crush scores for ${username}`);
+    console.log(`✅ Found ${scores.length} scores for ${username}`);
     return scores;
 
   } catch (error) {

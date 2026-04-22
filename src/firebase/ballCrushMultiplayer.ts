@@ -8,8 +8,6 @@ import {
   off,
   remove,
   runTransaction,
-  serverTimestamp,
-  push
 } from 'firebase/database';
 import { db } from './init';
 
@@ -39,10 +37,30 @@ export interface BallCrushLobby {
   finishedAt?: number;
   winner?: string;
   maxPlayers: 2;
+  countdownStartedAt?: number; // written by host when both players ready
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOCK CONSTANTS
+//
+// GLOBAL_LOCK_TTL  — how long the matchmaking-service lock lives before another
+//                    client can steal it. Keep SHORT so a crashed tab doesn't
+//                    block matchmaking. The holder renews every RENEW_INTERVAL.
+//
+// RENEW_INTERVAL   — how often the active matchmaker refreshes the lock.
+//                    Must be well below GLOBAL_LOCK_TTL.
+//
+// PAIR_LOCK_TTL    — per-player "currently being matched" lock. Held only for
+//                    the duration of createLobby (~1-2 s). Stale locks are
+//                    automatically overwritten after this timeout.
+// ─────────────────────────────────────────────────────────────────────────────
+const GLOBAL_LOCK_TTL = 4_000;  // ms
+const RENEW_INTERVAL  = 2_000;  // ms  (must be < GLOBAL_LOCK_TTL / 2)
+const PAIR_LOCK_TTL   = 15_000; // ms
 
 class BallCrushMultiplayer {
   private matchmakingListener: (() => void) | null = null;
+  private renewInterval: ReturnType<typeof setInterval> | null = null;
 
   // =========== ONLINE STATUS ===========
 
@@ -53,7 +71,7 @@ class BallCrushMultiplayer {
         online: isOnline,
         lastSeen: Date.now(),
         inQueue: false,
-        inGame: false
+        inGame: false,
       });
     } catch (error) {
       console.error('Error setting player online status:', error);
@@ -63,10 +81,7 @@ class BallCrushMultiplayer {
   async setPlayerQueueStatus(uid: string, inQueue: boolean): Promise<void> {
     if (!uid) return;
     try {
-      await update(ref(db, `online/${uid}`), {
-        inQueue,
-        lastSeen: Date.now()
-      });
+      await update(ref(db, `online/${uid}`), { inQueue, lastSeen: Date.now() });
     } catch (error) {
       console.error('Error updating queue status:', error);
     }
@@ -75,7 +90,7 @@ class BallCrushMultiplayer {
   async setPlayerGameStatus(uid: string, inGame: boolean, lobbyId?: string): Promise<void> {
     if (!uid) return;
     try {
-      const updates: any = { inGame, lastSeen: Date.now() };
+      const updates: Record<string, unknown> = { inGame, lastSeen: Date.now() };
       if (lobbyId) updates.currentLobby = lobbyId;
       await update(ref(db, `online/${uid}`), updates);
     } catch (error) {
@@ -83,25 +98,31 @@ class BallCrushMultiplayer {
     }
   }
 
-  async markLobbyReady(lobbyId: string): Promise<void> {
+  // =========== LOBBY READY / COUNTDOWN ===========
+
+  /**
+   * Marks the lobby as 'ready' and writes the countdown start timestamp
+   * in a single atomic update. Both clients read this timestamp to drive
+   * their countdown display — guaranteeing they show the same number at
+   * the same wall-clock time regardless of subscription lag.
+   *
+   * Called by the HOST only when both players are ready.
+   * Idempotent — safe to call multiple times (status won't regress from 'ready').
+   */
+  async markLobbyReadyWithTimestamp(lobbyId: string, startedAt: number): Promise<void> {
     if (!lobbyId) return;
     try {
-      await update(ref(db, `lobbies/${lobbyId}`), { status: 'ready' });
-      console.log(`✅ Lobby ${lobbyId} marked as ready`);
-    } catch (error) {
-      console.error('Error marking lobby as ready:', error);
-    }
-  }
+      // Only transition waiting → ready, never ready → ready (avoid resetting timestamp)
+      const snap = await get(ref(db, `lobbies/${lobbyId}/status`));
+      if (snap.exists() && snap.val() !== 'waiting') return;
 
-  async isPlayerOnlineAndInQueue(uid: string): Promise<boolean> {
-    if (!uid) return false;
-    try {
-      const snap = await get(ref(db, `online/${uid}`));
-      if (!snap.exists()) return false;
-      const d = snap.val();
-      return d.online === true && d.inQueue === true && (Date.now() - d.lastSeen < 30000);
-    } catch {
-      return false;
+      await update(ref(db, `lobbies/${lobbyId}`), {
+        status: 'ready',
+        countdownStartedAt: startedAt,
+      });
+      console.log(`✅ Lobby ${lobbyId} ready, countdown started at ${startedAt}`);
+    } catch (error) {
+      console.error('Error marking lobby ready with timestamp:', error);
     }
   }
 
@@ -109,7 +130,8 @@ class BallCrushMultiplayer {
 
   /**
    * Join the matchmaking queue.
-   * Cleans up ONLY stale (waiting/dead) lobbies — never touches finished ones.
+   * The $1 fee is charged in the scene BEFORE this is called.
+   * This method only manages queue state.
    */
   async joinQueue(
     uid: string,
@@ -124,28 +146,31 @@ class BallCrushMultiplayer {
 
     console.log(`🎮 ${username} joining ball-crush queue`);
 
-    // 1. Clean up any stale lobbies (waiting/dead only — NOT finished)
+    // Clear any stale pair-lock from a crashed previous session
+    await remove(ref(db, `matching_lock/${uid}`)).catch(() => {});
+
+    // Remove leftover match notification from a previous session
+    await remove(ref(db, `matches/${uid}`)).catch(() => {});
+
+    // Clean up stale lobbies before rejoining
     await this.cleanupStaleLobbies(uid);
 
-    // 2. Clear any leftover match notification from a previous session
-    await remove(ref(db, `matches/${uid}`));
-
-    // 3. Mark online + in queue
+    // Mark online + in queue
     await set(ref(db, `online/${uid}`), {
       online: true,
       inQueue: true,
       inGame: false,
-      lastSeen: Date.now()
+      lastSeen: Date.now(),
     });
 
-    // 4. Add to queue — use set so duplicate joins just overwrite
+    // Write queue entry — set() so repeated joins just overwrite
     await set(ref(db, `matchmaking/ball-crush/${uid}`), {
       uid,
       username,
       displayName: displayName || username,
       avatar: avatar || 'default',
       joinedAt: Date.now(),
-      gameId: 'ball-crush'
+      gameId: 'ball-crush',
     });
 
     console.log(`✅ ${username} added to queue`);
@@ -157,14 +182,27 @@ class BallCrushMultiplayer {
     await Promise.all([
       remove(ref(db, `matchmaking/ball-crush/${uid}`)),
       remove(ref(db, `matching_lock/${uid}`)),
-      update(ref(db, `online/${uid}`), { inQueue: false, lastSeen: Date.now() })
+      update(ref(db, `online/${uid}`), { inQueue: false, lastSeen: Date.now() }),
     ]);
   }
+async markLobbyDead(lobbyId: string): Promise<void> {
+  if (!lobbyId) return;
+  try {
+    // Only update if not already finished/dead — never overwrite a completed game
+    const snap = await get(ref(db, `lobbies/${lobbyId}/status`));
+    if (!snap.exists()) return;
+    const status = snap.val();
+    if (status === 'finished' || status === 'dead') return;
 
-  /**
-   * Cleans up lobbies that are stuck in 'waiting' or 'dead' state for this player.
-   * DOES NOT touch 'finished' lobbies.
-   */
+    await Promise.all([
+      update(ref(db, `lobbies/${lobbyId}`), { status: 'dead' }),
+      remove(ref(db, `gameStates/${lobbyId}`)),
+    ]);
+    console.log(`🪦 Lobby ${lobbyId} marked dead`);
+  } catch (error) {
+    console.error('Error marking lobby dead:', error);
+  }
+}
   private async cleanupStaleLobbies(uid: string): Promise<void> {
     try {
       const snap = await get(ref(db, 'lobbies'));
@@ -176,12 +214,14 @@ class BallCrushMultiplayer {
       snap.forEach((child) => {
         const lobby = child.val();
         const lobbyId = child.key!;
-        const isStale = now - (lobby.createdAt || 0) > 5 * 60 * 1000; // older than 5 min
-        const isOurLobby = lobby.playerIds && lobby.playerIds.includes(uid);
-        const isDeadOrWaiting = lobby.status === 'waiting' || lobby.status === 'dead';
+        const age = now - (lobby.createdAt || 0);
+        const isOurs = lobby.playerIds?.includes(uid);
+        const isStaleWaiting = lobby.status === 'waiting' && age > 2 * 60_000;
+        const isDead = lobby.status === 'dead';
+        const isVeryOld = age > 5 * 60_000;
 
-        if (isOurLobby && (isDeadOrWaiting || isStale)) {
-          console.log(`🗑️ Removing stale lobby ${lobbyId} (status: ${lobby.status})`);
+        if (isOurs && (isStaleWaiting || isDead || isVeryOld)) {
+          console.log(`🗑️ Removing stale lobby ${lobbyId} (${lobby.status})`);
           deletions.push(remove(ref(db, `lobbies/${lobbyId}`)));
           deletions.push(remove(ref(db, `gameStates/${lobbyId}`)));
         }
@@ -194,117 +234,153 @@ class BallCrushMultiplayer {
   }
 
   // =========== MATCHMAKING SERVICE ===========
+  //
+  // HOW THE DISTRIBUTED LOCK WORKS
+  // ──────────────────────────────
+  // 1. Each client races to write `matchmaking_lock/ball-crush` via a Firebase
+  //    transaction. Only one wins — Firebase transactions are atomic server-side.
+  //    The winner becomes THE matchmaker; everyone else retries after TTL expiry.
+  //
+  // 2. The winner renews its lock every RENEW_INTERVAL ms. If it crashes, the
+  //    lock expires after GLOBAL_LOCK_TTL ms and the next client takes over.
+  //
+  // 3. Inside the queue onValue callback, the winner re-reads the lock BEFORE
+  //    touching any player data. If it no longer owns the lock it stops.
+  //
+  // 4. Per-player pair-locks (`matching_lock/<uid>`) are short-lived locks that
+  //    prevent two matchmaker instances from matching the same player at once.
+  //    Released in a finally block — always.
+  //
+  // 5. atomicClaimPlayer uses a Firebase transaction to DELETE the player from
+  //    the queue atomically. Only one client can delete a non-null node.
+  //
+  // IMPORTANT FOR CALLERS (the Phaser scene):
+  //   • Call startMatchmakingService() ONCE when entering the matchmaking scene.
+  //   • Do NOT call stop() + start() on a timer — that breaks the distributed
+  //     lock. If you want a "nudge" after N seconds, call joinQueue() again to
+  //     refresh the player's joinedAt timestamp instead.
 
   startMatchmakingService(): void {
-    if (this.matchmakingListener) return;
+    if (this.matchmakingListener) return; // Already running on this instance
 
     const lockRef = ref(db, 'matchmaking_lock/ball-crush');
-    const myId = Math.random().toString(36).slice(2);
+    const myId    = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
     runTransaction(lockRef, (current) => {
-      const now = Date.now();
-      if (!current || (now - current.claimedAt) > 8000) {
-        return { claimedAt: now, claimedBy: myId };
-      }
-      return undefined; // Someone else holds the lock
-    }).then((result) => {
-      if (!result.committed) {
-        console.log('👀 Another client is matchmaking, just listening for our own match');
-        setTimeout(() => {
-          this.startMatchmakingService();
-        }, 9000);
+      const now     = Date.now();
+      const expired = !current || (now - (current.claimedAt ?? 0)) > GLOBAL_LOCK_TTL;
+      if (expired) return { claimedAt: now, claimedBy: myId };
+      return undefined; // Someone holds a fresh lock — abort
+    })
+      .then((result) => {
+        if (!result.committed) {
+          // Another client holds the lock — retry after it would expire
+          console.log('👀 Another client is matchmaking — will retry');
+          setTimeout(() => this.startMatchmakingService(), GLOBAL_LOCK_TTL + 500);
+          return;
+        }
+
+        console.log(`🎯 This client (${myId}) is the ball-crush matchmaker`);
+
+        // Renew the lock on a tight interval
+        this.renewInterval = setInterval(async () => {
+          if (!this.matchmakingListener) {
+            clearInterval(this.renewInterval!);
+            this.renewInterval = null;
+            return;
+          }
+          try {
+            await runTransaction(lockRef, (current) => {
+              if (!current || current.claimedBy !== myId) return undefined; // Lost it
+              return { claimedAt: Date.now(), claimedBy: myId };
+            });
+          } catch { /* best effort */ }
+        }, RENEW_INTERVAL);
+
+        const queueRef = ref(db, 'matchmaking/ball-crush');
+        this.matchmakingListener = onValue(queueRef, (snapshot) => {
+          this.processQueue(snapshot, lockRef, myId).catch(console.error);
+        });
+      })
+      .catch(console.error);
+  }
+
+  private async processQueue(
+    snapshot: import('firebase/database').DataSnapshot,
+    lockRef: import('firebase/database').DatabaseReference,
+    myId: string
+  ): Promise<void> {
+    if (!snapshot.exists()) return;
+
+    // Re-verify lock ownership BEFORE touching any player data
+    const lockSnap = await get(lockRef);
+    if (!lockSnap.exists() || lockSnap.val().claimedBy !== myId) {
+      console.log('⚠️ Lost matchmaking lock — stopping');
+      this.stopMatchmakingService();
+      return;
+    }
+
+    const queue = snapshot.val() as Record<string, any>;
+    const now   = Date.now();
+
+    const eligible = (Object.values(queue) as any[]).filter(
+      (p) => p.uid && (!p.joinedAt || now - p.joinedAt < 180_000)
+    );
+
+    if (eligible.length < 2) return;
+
+    // FIFO — match the two longest-waiting players
+    eligible.sort((a, b) => a.joinedAt - b.joinedAt);
+
+    const p1 = eligible[0];
+    const p2 = eligible[1];
+    if (!p1?.uid || !p2?.uid || p1.uid === p2.uid) return;
+
+    // Acquire per-player pair-locks (both or neither)
+    const locked1 = await this.lockPlayerForMatch(p1.uid);
+    if (!locked1) {
+      console.log(`⚠️ ${p1.uid} already being matched — skipping tick`);
+      return;
+    }
+
+    const locked2 = await this.lockPlayerForMatch(p2.uid);
+    if (!locked2) {
+      console.log(`⚠️ ${p2.uid} already being matched — skipping tick`);
+      await this.unlockPlayerFromMatch(p1.uid);
+      return;
+    }
+
+    try {
+      // Atomically remove both players from the queue
+      const claim1 = await this.atomicClaimPlayer(p1.uid);
+      if (!claim1.claimed) {
+        console.log(`⚠️ ${p1.uid} already claimed — skipping`);
         return;
       }
 
-      console.log('🎯 This client is the ball-crush matchmaker');
-      const myLockValue = result.snapshot.val();
+      const claim2 = await this.atomicClaimPlayer(p2.uid);
+      if (!claim2.claimed) {
+        console.log(`⚠️ ${p2.uid} already claimed — rolling back p1`);
+        await set(ref(db, `matchmaking/ball-crush/${p1.uid}`), claim1.data).catch(() => {});
+        return;
+      }
 
-      // Renew the lock every 5s so other clients know we're still alive
-      const renewInterval = setInterval(async () => {
-        if (!this.matchmakingListener) { clearInterval(renewInterval); return; }
-        await update(lockRef, { claimedAt: Date.now() });
-      }, 5000);
+      console.log(`✅ Matched: ${p1.username} vs ${p2.username}`);
 
-      const queueRef = ref(db, 'matchmaking/ball-crush');
-      this.matchmakingListener = onValue(queueRef, async (snapshot) => {
-        if (!snapshot.exists()) return;
-
-        // Verify we still hold the lock before doing anything
-        const lockSnap = await get(lockRef);
-        if (!lockSnap.exists() || lockSnap.val().claimedBy !== myLockValue.claimedBy) {
-          console.log('⚠️ Lost matchmaking lock, stopping');
-          this.stopMatchmakingService();
-          clearInterval(renewInterval);
-          return;
-        }
-
-        const queue = snapshot.val() as Record<string, any>;
-        const players = Object.values(queue) as any[];
-        if (players.length < 2) return;
-
-        const now = Date.now();
-        // Only consider players who joined recently (within 3 minutes)
-        const eligible = players.filter(
-          (p) => p.uid && (!p.joinedAt || (now - p.joinedAt) < 180000)
-        );
-        if (eligible.length < 2) return;
-
-        // Sort oldest-first for fairness (FIFO)
-        eligible.sort((a, b) => a.joinedAt - b.joinedAt);
-
-        // Process one pair per tick to keep things clean
-        const p1 = eligible[0];
-        const p2 = eligible[1];
-        if (p1.uid === p2.uid) return;
-
-        // Lock both players at the match-assignment level first
-        // to prevent two concurrent matchmaker instances from double-assigning
-        const locked1 = await this.lockPlayerForMatch(p1.uid);
-        if (!locked1) {
-          console.log(`⚠️ ${p1.uid} already being matched, skipping`);
-          return;
-        }
-
-        const locked2 = await this.lockPlayerForMatch(p2.uid);
-        if (!locked2) {
-          console.log(`⚠️ ${p2.uid} already being matched, skipping`);
-          await this.unlockPlayerFromMatch(p1.uid);
-          return;
-        }
-
-        // Now atomically claim both from the queue
-        const claim1 = await this.atomicClaimPlayer(p1.uid);
-        if (!claim1.claimed) {
-          console.log(`⚠️ Failed to claim ${p1.uid} from queue (already taken)`);
-          await this.unlockPlayerFromMatch(p1.uid);
-          await this.unlockPlayerFromMatch(p2.uid);
-          return;
-        }
-
-        const claim2 = await this.atomicClaimPlayer(p2.uid);
-        if (!claim2.claimed) {
-          console.log(`⚠️ Failed to claim ${p2.uid} from queue (already taken)`);
-          // Roll back p1
-          await set(ref(db, `matchmaking/ball-crush/${p1.uid}`), claim1.data);
-          await this.unlockPlayerFromMatch(p1.uid);
-          await this.unlockPlayerFromMatch(p2.uid);
-          return;
-        }
-
-        console.log(`✅ Matched: ${p1.username} vs ${p2.username}`);
-        try {
-          await this.createLobby(p1.uid, p2.uid, claim1.data, claim2.data);
-        } catch (err) {
-          console.error('Failed to create lobby, re-queuing both players:', err);
-          await set(ref(db, `matchmaking/ball-crush/${p1.uid}`), claim1.data);
-          await set(ref(db, `matchmaking/ball-crush/${p2.uid}`), claim2.data);
-        } finally {
-          // Always release the match-level locks
-          await this.unlockPlayerFromMatch(p1.uid);
-          await this.unlockPlayerFromMatch(p2.uid);
-        }
-      });
-    }).catch(console.error);
+      try {
+        await this.createLobby(p1.uid, p2.uid, claim1.data, claim2.data);
+      } catch (err) {
+        console.error('❌ createLobby failed — re-queuing both:', err);
+        await Promise.all([
+          set(ref(db, `matchmaking/ball-crush/${p1.uid}`), claim1.data).catch(() => {}),
+          set(ref(db, `matchmaking/ball-crush/${p2.uid}`), claim2.data).catch(() => {}),
+        ]);
+      }
+    } finally {
+      // Always release pair-locks
+      await this.unlockPlayerFromMatch(p1.uid);
+      await this.unlockPlayerFromMatch(p2.uid);
+    }
   }
 
   stopMatchmakingService(): void {
@@ -312,46 +388,40 @@ class BallCrushMultiplayer {
       this.matchmakingListener();
       this.matchmakingListener = null;
     }
+    if (this.renewInterval) {
+      clearInterval(this.renewInterval);
+      this.renewInterval = null;
+    }
   }
 
-  /**
-   * Atomically claim a player from the queue.
-   * Returns { claimed: true, data } ONLY if THIS caller was the one who removed the entry.
-   */
   private async atomicClaimPlayer(uid: string): Promise<{ claimed: boolean; data: any }> {
     const playerRef = ref(db, `matchmaking/ball-crush/${uid}`);
+    let capturedData: any = null;
     try {
-      let capturedData: any = null;
-
-      const result = await runTransaction(playerRef, (currentData) => {
-        if (currentData === null) {
-          // Already claimed by someone else — abort
-          return undefined;
-        }
-        capturedData = currentData;
-        return null; // Delete the entry atomically
+      const result = await runTransaction(playerRef, (current) => {
+        if (current === null) return undefined; // Already gone — abort
+        capturedData = current;
+        return null; // Delete atomically
       });
 
       if (result.committed && result.snapshot.val() === null && capturedData !== null) {
         return { claimed: true, data: capturedData };
       }
-
       return { claimed: false, data: null };
     } catch (error) {
-      console.error('Transaction failed for', uid, error);
+      console.error('atomicClaimPlayer failed for', uid, error);
       return { claimed: false, data: null };
     }
   }
 
-  /**
-   * Guard against a player being assigned to multiple lobbies simultaneously.
-   * Uses a Firebase transaction on a per-player "matching_lock" flag.
-   */
   private async lockPlayerForMatch(uid: string): Promise<boolean> {
     const lockRef = ref(db, `matching_lock/${uid}`);
     try {
       const result = await runTransaction(lockRef, (current) => {
-        if (current !== null) return undefined; // Already locked — abort
+        if (current !== null) {
+          const isStale = Date.now() - (current.lockedAt ?? 0) > PAIR_LOCK_TTL;
+          if (!isStale) return undefined; // Actively locked — abort
+        }
         return { lockedAt: Date.now() };
       });
       return result.committed;
@@ -361,9 +431,7 @@ class BallCrushMultiplayer {
   }
 
   private async unlockPlayerFromMatch(uid: string): Promise<void> {
-    try {
-      await remove(ref(db, `matching_lock/${uid}`));
-    } catch { /* best effort */ }
+    await remove(ref(db, `matching_lock/${uid}`)).catch(() => {});
   }
 
   // =========== LOBBY MANAGEMENT ===========
@@ -389,7 +457,7 @@ class BallCrushMultiplayer {
           health: 5,
           position: { x: 180, y: 550 },
           isReady: false,
-          score: 0
+          score: 0,
         },
         [player2Uid]: {
           uid: player2Uid,
@@ -399,30 +467,29 @@ class BallCrushMultiplayer {
           health: 5,
           position: { x: 180, y: 50 },
           isReady: false,
-          score: 0
-        }
+          score: 0,
+        },
       },
       playerIds: [player1Uid, player2Uid],
       createdAt: Date.now(),
-      maxPlayers: 2
+      maxPlayers: 2,
     };
 
     await set(ref(db, `lobbies/${lobbyId}`), lobby);
 
-    // Notify both players simultaneously
     await Promise.all([
       set(ref(db, `matches/${player1Uid}`), {
         lobbyId,
         gameId: 'ball-crush',
-        timestamp: Date.now()
+        timestamp: Date.now(),
       }),
       set(ref(db, `matches/${player2Uid}`), {
         lobbyId,
         gameId: 'ball-crush',
-        timestamp: Date.now()
+        timestamp: Date.now(),
       }),
       update(ref(db, `online/${player1Uid}`), { inGame: true, inQueue: false }),
-      update(ref(db, `online/${player2Uid}`), { inGame: true, inQueue: false })
+      update(ref(db, `online/${player2Uid}`), { inGame: true, inQueue: false }),
     ]);
 
     console.log(`🏰 Lobby created: ${lobbyId}`);
@@ -444,31 +511,23 @@ class BallCrushMultiplayer {
     lobbyId: string,
     callback: (lobby: BallCrushLobby | null) => void
   ): () => void {
-    if (!lobbyId) return () => { };
+    if (!lobbyId) return () => {};
     const lobbyRef = ref(db, `lobbies/${lobbyId}`);
-    const unsub = onValue(lobbyRef, (snap) => {
+    return onValue(lobbyRef, (snap) => {
       callback(snap.exists() ? (snap.val() as BallCrushLobby) : null);
     });
-    return unsub;
   }
 
   async setPlayerReady(lobbyId: string, uid: string, isReady: boolean): Promise<void> {
     if (!lobbyId || !uid) return;
-
     await update(ref(db, `lobbies/${lobbyId}/players/${uid}`), { isReady });
-
-    const lobby = await this.getLobby(lobbyId);
-    if (lobby && lobby.status === 'waiting') {
-      const allReady = lobby.playerIds.every(id => lobby.players[id]?.isReady);
-      if (allReady) await this.startGame(lobbyId);
-    }
   }
 
   async startGame(lobbyId: string): Promise<void> {
     if (!lobbyId) return;
     await update(ref(db, `lobbies/${lobbyId}`), {
       status: 'playing',
-      startedAt: Date.now()
+      startedAt: Date.now(),
     });
     console.log(`🎮 Game started in lobby: ${lobbyId}`);
   }
@@ -487,14 +546,12 @@ class BallCrushMultiplayer {
     const lobby = await this.getLobby(lobbyId);
     if (!lobby) return;
 
-    const opponentUid = lobby.playerIds.find(id => id !== cancellerUid);
-    if (opponentUid) {
-      await this.setDisplaced(opponentUid, lobbyId);
-    }
+    const opponentUid = lobby.playerIds.find((id) => id !== cancellerUid);
+    if (opponentUid) await this.setDisplaced(opponentUid, lobbyId);
 
     await Promise.all([
       update(ref(db, `lobbies/${lobbyId}`), { status: 'dead' }),
-      remove(ref(db, `gameStates/${lobbyId}`))
+      remove(ref(db, `gameStates/${lobbyId}`)),
     ]);
   }
 
@@ -522,18 +579,17 @@ class BallCrushMultiplayer {
       y: ballData.y,
       speed: ballData.speed,
       direction: { x: ballData.directionX, y: ballData.directionY },
-      timestamp: ballData.timestamp || Date.now(),
-      lastUpdate: Date.now()
+      timestamp: ballData.timestamp ?? Date.now(),
+      lastUpdate: Date.now(),
     });
   }
 
   subscribeToBallUpdates(lobbyId: string, callback: (ballData: any) => void): () => void {
-    if (!lobbyId) return () => { };
+    if (!lobbyId) return () => {};
     const ballRef = ref(db, `gameStates/${lobbyId}/ball`);
-    const unsub = onValue(ballRef, (snap) => {
+    return onValue(ballRef, (snap) => {
       if (snap.exists()) callback(snap.val());
     });
-    return unsub;
   }
 
   async playerScored(lobbyId: string, scorerUid: string, opponentUid: string): Promise<void> {
@@ -542,17 +598,15 @@ class BallCrushMultiplayer {
     const lobby = await this.getLobby(lobbyId);
     if (!lobby) return;
 
-    const newHealth = Math.max(0, (lobby.players[opponentUid]?.health || 5) - 1);
-    const newScore = (lobby.players[scorerUid]?.score || 0) + 1;
+    const newHealth = Math.max(0, (lobby.players[opponentUid]?.health ?? 5) - 1);
+    const newScore  = (lobby.players[scorerUid]?.score ?? 0) + 1;
 
     await Promise.all([
       update(ref(db, `lobbies/${lobbyId}/players/${opponentUid}`), { health: newHealth }),
-      update(ref(db, `lobbies/${lobbyId}/players/${scorerUid}`), { score: newScore })
+      update(ref(db, `lobbies/${lobbyId}/players/${scorerUid}`), { score: newScore }),
     ]);
 
-    if (newHealth <= 0) {
-      await this.endGame(lobbyId, scorerUid);
-    }
+    if (newHealth <= 0) await this.endGame(lobbyId, scorerUid);
   }
 
   async resetBall(lobbyId: string, serverDirection: 'up' | 'down'): Promise<void> {
@@ -561,10 +615,11 @@ class BallCrushMultiplayer {
       x: 180,
       y: 320,
       speed: 200,
-      direction: serverDirection === 'up'
-        ? { x: (Math.random() * 0.8) - 0.4, y: -0.8 }
-        : { x: (Math.random() * 0.8) - 0.4, y: 0.8 },
-      lastUpdate: Date.now()
+      direction:
+        serverDirection === 'up'
+          ? { x: Math.random() * 0.8 - 0.4, y: -0.8 }
+          : { x: Math.random() * 0.8 - 0.4, y: 0.8 },
+      lastUpdate: Date.now(),
     });
   }
 
@@ -576,16 +631,15 @@ class BallCrushMultiplayer {
     await update(ref(db, `lobbies/${lobbyId}`), {
       status: 'finished',
       finishedAt: Date.now(),
-      winner: winnerUid
+      winner: winnerUid,
     });
 
     console.log(`🏆 Game finished, winner: ${winnerUid}`);
-
     await remove(ref(db, `gameStates/${lobbyId}`));
 
     setTimeout(async () => {
       await remove(ref(db, `lobbies/${lobbyId}`));
-    }, 5 * 60 * 1000);
+    }, 5 * 60_000);
   }
 
   async playerLeave(lobbyId: string, uid: string): Promise<void> {
@@ -594,7 +648,7 @@ class BallCrushMultiplayer {
     const lobby = await this.getLobby(lobbyId);
     if (!lobby) return;
 
-    const other = lobby.playerIds.find(id => id !== uid);
+    const other = lobby.playerIds.find((id) => id !== uid);
 
     if (other && lobby.status === 'playing') {
       await this.endGame(lobbyId, other);
@@ -602,20 +656,19 @@ class BallCrushMultiplayer {
       await update(ref(db, `lobbies/${lobbyId}`), { status: 'dead' });
     }
 
-    // Mark both players as no longer in game
-    const updates: Record<string, any> = {
+    const onlineUpdates: Record<string, unknown> = {
       [`online/${uid}/inGame`]: false,
-      [`online/${uid}/lastSeen`]: Date.now()
+      [`online/${uid}/lastSeen`]: Date.now(),
     };
     if (other) {
-      updates[`online/${other}/inGame`] = false;
-      updates[`online/${other}/lastSeen`] = Date.now();
+      onlineUpdates[`online/${other}/inGame`] = false;
+      onlineUpdates[`online/${other}/lastSeen`] = Date.now();
     }
-    await update(ref(db), updates);
+    await update(ref(db), onlineUpdates);
   }
 
   cleanup(lobbyId: string, ...unsubscribeFunctions: (() => void)[]) {
-    unsubscribeFunctions.forEach(fn => fn && fn());
+    unsubscribeFunctions.forEach((fn) => fn?.());
     if (lobbyId) off(ref(db, `gameStates/${lobbyId}/ball`));
   }
 }

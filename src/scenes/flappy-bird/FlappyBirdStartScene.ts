@@ -1,3 +1,4 @@
+// src/scenes/flappy-bird/FlappyBirdStartScene.ts
 import Phaser from 'phaser';
 import {
   getFlappyBirdUserData,
@@ -6,547 +7,409 @@ import {
   getFlappyBirdBalance,
   FlappyBirdUserData,
   FlappyBirdLeaderboardEntry,
-  deductFlappyBirdWalletBalance
+  deductFlappyBirdWalletBalance,
 } from '../../firebase/flappyBirdSimple';
 
+// ── Colour palette ────────────────────────────────────────────────────────────
+// Sky theme: everything reads against a bright blue/cyan sky.
+// Strokes are always dark navy (#003366) — never green.
+// Value text is white or warm yellow — never neon green.
+const C = {
+  NAVY:        '#003366',   // stroke on all text
+  WHITE:       '#ffffff',
+  YELLOW:      '#ffe040',   // primary accent / play button tint
+  GOLD:        '#ffd700',   // best score highlight
+  MUTED:       '#cceeff',   // small labels — light sky blue-white, readable on sky
+  PANEL_FILL:  0x0000,    // frosted glass panels
+  PANEL_ALPHA: 0.48,
+  PANEL_STROKE:0xffffff,
+  PANEL_STROKE_A: 0.65,
+};
 
-interface MenuButton {
-  text: string;
-  color: string;
-  scene?: string;
-  isExternal?: boolean;
-  url?: string;
-}
 export class FlappyBirdStartScene extends Phaser.Scene {
-  // Receive username from LoaderScene
   private username: string = '';
   private uid: string = '';
 
-
-  // Then we fetch ALL this data ourselves
-  private userData: FlappyBirdUserData | null = null;
+  private userData:    FlappyBirdUserData | null    = null;
   private leaderboard: FlappyBirdLeaderboardEntry[] = [];
-  private playerRank: number = 0;
-  private balance: number = 0;
+  private playerRank:  number = 0;
+  private balance:     number = 0;
 
-  // UI Elements
   private balanceText!: Phaser.GameObjects.Text;
-  private highScoreText!: Phaser.GameObjects.Text;
-  private rankText!: Phaser.GameObjects.Text;
-  private menuButtons: Phaser.GameObjects.Text[] = [];
-  private birdSprite!: Phaser.GameObjects.Sprite;
   private loadingText!: Phaser.GameObjects.Text;
-  private errorText!: Phaser.GameObjects.Text;
-  private retryButton!: Phaser.GameObjects.Text;
+  private birdSprite!:  Phaser.GameObjects.Sprite;
+
+  // Parallax clouds
+  private cloudLayers: Array<Array<{ obj: Phaser.GameObjects.Graphics; speed: number }>> = [];
 
   constructor() {
     super({ key: 'FlappyBirdStartScene' });
   }
 
-  // RECEIVE USERNAME AND UID FROM LOADERSCENE
   init(data: { username: string; uid?: string }) {
-    console.log('📥 StartScene received:', data);
-
-    if (!data || !data.username) {
-      console.error('❌ No username received!');
-      this.showErrorAndRedirect('No username provided');
-      return;
-    }
-
-    this.username = data.username;
-    this.uid = data.uid || '';
-    console.log('👤 Username set to:', this.username);
-    console.log('🆔 UID set to:', this.uid);
+    if (!data?.username) { this.scene.start('CookieScene'); return; }
+    this.username    = data.username;
+    this.uid         = data.uid || '';
+    this.cloudLayers = [];
   }
 
   async create() {
-    console.log('🎨 Creating StartScene for:', this.username);
-
     this.addBackground();
     this.showLoading();
-
     try {
       await this.fetchAllUserData();
       this.loadingText?.destroy();
-      this.buildFullUI();
-    } catch (error) {
-      console.error('❌ Failed to load data:', error);
-      this.showError('Failed to load game data. Please try again.');
+      this.buildUI();
+    } catch (e) {
+      console.error('❌', e);
+      this.showError('Failed to load. Please try again.');
     }
   }
 
-  private showLoading() {
-    this.loadingText = this.add.text(180, 300, `LOADING DATA...`, {
-      fontSize: '18px',
-      color: '#ffff00'
-    }).setOrigin(0.5);
+  update(_t: number, delta: number) {
+    const dt = delta / 1000;
+    this.cloudLayers.forEach(layer =>
+      layer.forEach(c => {
+        c.obj.x -= c.speed * dt;
+        if (c.obj.x < -150) c.obj.x = 410 + Phaser.Math.Between(0, 50);
+      })
+    );
   }
 
-  private showError(message: string) {
-    this.loadingText?.destroy();
-
-    // Dark overlay
-    const overlay = this.add.graphics();
-    overlay.fillStyle(0x000000, 0.9);
-    overlay.fillRect(0, 0, 360, 640);
-
-    // Error icon
-    this.add.text(180, 200, '❌', {
-      fontSize: '48px',
-      color: '#ff0000'
-    }).setOrigin(0.5);
-
-    // Error message
-    this.errorText = this.add.text(180, 260, message, {
-      fontSize: '18px',
-      color: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 2,
-      wordWrap: { width: 300 }
-    }).setOrigin(0.5);
-
-    // Retry button
-    this.retryButton = this.add.text(180, 330, '🔄 TRY AGAIN', {
-      fontSize: '20px',
-      color: '#ffffff',
-      backgroundColor: '#4CAF50',
-      padding: { x: 15, y: 8 }
-    })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-
-    this.retryButton.on('pointerover', () => {
-      this.retryButton.setStyle({ color: '#ffff00', backgroundColor: '#45a049' });
-    });
-
-    this.retryButton.on('pointerout', () => {
-      this.retryButton.setStyle({ color: '#ffffff', backgroundColor: '#4CAF50' });
-    });
-
-    this.retryButton.on('pointerdown', () => {
-      this.scene.restart({ username: this.username, uid: this.uid });
-    });
-  }
-
-  private showErrorAndRedirect(message: string) {
-    this.loadingText?.destroy();
-
-    const overlay = this.add.graphics();
-    overlay.fillStyle(0x000000, 0.9);
-    overlay.fillRect(0, 0, 360, 640);
-
-    this.add.text(180, 250, '🔒', {
-      fontSize: '48px',
-      color: '#ff0000'
-    }).setOrigin(0.5);
-
-    this.add.text(180, 310, message, {
-      fontSize: '18px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-
-    this.add.text(180, 370, 'Redirecting to login...', {
-      fontSize: '14px',
-      color: '#ffff00'
-    }).setOrigin(0.5);
-
-    setTimeout(() => {
-      window.location.href = '/login';
-    }, 2000);
-  }
-
+  // ─── Data ──────────────────────────────────────────────────────────────────
   private async fetchAllUserData() {
-    console.log('📡 Fetching data for:', this.username);
-    console.log('🆔 Using UID:', this.uid);
-
-    // Use the Flappy Bird specific functions
     const [userData, leaderboard, rank, balance] = await Promise.all([
       getFlappyBirdUserData(this.uid),
       getFlappyBirdLeaderboard(10),
       getFlappyBirdPlayerRank(this.username),
-      getFlappyBirdBalance(this.uid)
+      getFlappyBirdBalance(this.uid),
     ]);
-
-    if (!userData) {
-      throw new Error('No user data found for: ' + this.username);
-    }
-
-    // Update userData with the correct balance
-    this.balance = balance;
-    this.userData = userData;
-    this.leaderboard = leaderboard;
-    this.playerRank = rank;
-
-    console.log('✅ User data fetched:', {
-      username: this.userData.username,
-      displayName: this.userData.displayName,
-      highScore: this.userData.highScore,
-      balance: this.balance,
-      totalGames: this.userData.totalGames
-    });
+    if (!userData) throw new Error('No user data');
+    this.userData = userData; this.leaderboard = leaderboard;
+    this.playerRank = rank;  this.balance = balance;
   }
 
-  private buildFullUI() {
-    if (!this.userData) return;
+  // ─── Background ────────────────────────────────────────────────────────────
+  private addBackground() {
+    this.cameras.main.setBackgroundColor('#4EC0CA');
 
+    // bg2.jpg is the pixel art cloudy sky — preferred
+    const key = this.textures.exists('background-alt') ? 'background-alt'
+              : this.textures.exists('background')      ? 'background'
+              : null;
+    if (key) this.add.image(180, 320, key).setDisplaySize(360, 640).setDepth(-2);
+
+    // Parallax clouds drawn on top for extra depth
+    this.spawnClouds();
+  }
+
+  private spawnClouds() {
+    const makeClouds = (defs: { x: number; y: number; w: number; h: number }[], alpha: number, speed: number) => {
+      const layer: typeof this.cloudLayers[0] = [];
+      defs.forEach(d => {
+        const g = this.add.graphics().setDepth(1);
+        g.x = d.x; g.y = d.y;
+        g.fillStyle(0xffffff, alpha);
+        g.fillEllipse(0, 0, d.w, d.h);
+        g.fillEllipse(-d.w * 0.22, -d.h * 0.38, d.w * 0.58, d.h * 0.68);
+        g.fillEllipse(d.w * 0.16, -d.h * 0.30, d.w * 0.48, d.h * 0.62);
+        layer.push({ obj: g, speed });
+      });
+      this.cloudLayers.push(layer);
+    };
+
+    // Far layer — slow, translucent
+    makeClouds([
+      { x: 50,  y: 78,  w: 85,  h: 24 },
+      { x: 210, y: 68,  w: 105, h: 28 },
+      { x: 340, y: 88,  w: 72,  h: 20 },
+    ], 0.32, 6);
+
+    // Near layer — faster, more solid
+    makeClouds([
+      { x: 110, y: 108, w: 115, h: 34 },
+      { x: 295, y: 98,  w: 92,  h: 28 },
+    ], 0.5, 14);
+  }
+
+  // ─── Full UI ───────────────────────────────────────────────────────────────
+  private buildUI() {
+    if (!this.userData) return;
     this.addTitle();
     this.addBird();
-    this.createBalanceDisplay();
-    this.createHighScoreDisplay();
-    this.createRankDisplay();
-    this.createWelcomeMessage();
-    this.createMenuButtons();
+    this.addStatBar();
+    this.addWelcome();
+    this.addButtons();
     this.addFooter();
-    this.setupInputHandlers();
+    this.setupKeyboard();
   }
 
-  private addBackground() {
-    if (this.textures.exists('background')) {
-      const bg = this.add.image(180, 320, 'background');
-      bg.setDisplaySize(360, 640);
-    } else {
-      this.cameras.main.setBackgroundColor('#87CEEB');
-    }
-  }
-
+  // ─── Title ─────────────────────────────────────────────────────────────────
   private addTitle() {
-    this.add.text(180, 70, 'FLAPPY BIRD ONLINE', {
-      fontSize: '28px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 4
-    }).setOrigin(0.5);
+    const p = this.add.graphics().setDepth(9);
+    p.fillStyle(C.PANEL_FILL, C.PANEL_ALPHA);
+    p.fillRoundedRect(28, 18, 304, 64, 14);
+    p.lineStyle(2, C.PANEL_STROKE, C.PANEL_STROKE_A);
+    p.strokeRoundedRect(28, 18, 304, 64, 14);
+
+    this.add.text(180, 36, 'FLAPPY BIRD', {
+      fontSize: '30px', color: C.WHITE, fontStyle: 'bold',
+      stroke: C.NAVY, strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(10);
+
+    this.add.text(180, 66, 'O N L I N E', {
+      fontSize: '12px', color: C.WHITE,
+      stroke: C.NAVY, strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(10);
   }
 
+  // ─── Bird ──────────────────────────────────────────────────────────────────
   private addBird() {
-    if (!this.textures.exists('bird-frame1')) return;
+    // Soft white glow behind bird
+    const glow = this.add.graphics().setDepth(8);
+    glow.fillStyle(0xffffff, 0.25);
+    glow.fillCircle(180, 148, 44);
+    glow.fillStyle(0xffffff, 0.12);
+    glow.fillCircle(180, 148, 60);
+    this.tweens.add({ targets: glow, scaleX: 1.07, scaleY: 1.07, duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
-    this.birdSprite = this.add.sprite(180, 150, 'bird-frame1');
-    this.birdSprite.setScale(0.2);
-
-    if (!this.anims.exists('fly')) {
-      this.anims.create({
-        key: 'fly',
-        frames: [
-          { key: 'bird-frame1' },
-          { key: 'bird-frame2' }
-        ],
-        frameRate: 4,
-        repeat: -1
-      });
-    }
-
-    this.birdSprite.play('fly');
-
-    this.tweens.add({
-      targets: this.birdSprite,
-      y: 145,
-      duration: 1000,
-      yoyo: true,
-      repeat: -1
-    });
-  }
-
-  private createWelcomeMessage() {
-    this.add.text(180, 200, `Welcome, ${this.userData!.displayName}!`, {
-      fontSize: '16px',
-      color: '#ffff00',
-      stroke: '#000000',
-      strokeThickness: 2
-    }).setOrigin(0.5);
-
-    this.add.text(180, 220, `${this.userData!.rank} • Level ${this.userData!.level}`, {
-      fontSize: '14px',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-  }
-
-  private createBalanceDisplay() {
-    const bg = this.add.graphics();
-    bg.fillStyle(0x000000, 0.7);
-    bg.fillRoundedRect(5, 5, 110, 40, 8);
-    bg.lineStyle(1, 0xffd700);
-    bg.strokeRoundedRect(5, 5, 110, 40, 8);
-
-    this.add.text(10, 8, '💰', { fontSize: '20px' });
-    this.add.text(35, 8, 'Bal:', { fontSize: '12px', color: '#ffffff' });
-
-    // Use this.balance instead of userData.balance
-    this.balanceText = this.add.text(35, 23, `$${this.balance.toFixed(2)}`, {
-      fontSize: '14px',
-      color: '#00ff00',
-      fontStyle: 'bold'
-    });
-  }
-
-  private createHighScoreDisplay() {
-    if (!this.userData) {
-      console.log('❌ No user data for high score');
-      return;
-    }
-
-    console.log('📊 Displaying high score:', this.userData.highScore);
-
-    const bg = this.add.graphics();
-    bg.fillStyle(0x000000, 0.7);
-    bg.fillRoundedRect(245, 5, 110, 40, 8);
-    bg.lineStyle(1, 0xffd700);
-    bg.strokeRoundedRect(245, 5, 110, 40, 8);
-
-    this.add.text(250, 8, '🏆', { fontSize: '20px' });
-    this.add.text(275, 8, 'Best:', { fontSize: '12px', color: '#ffffff' });
-
-    const highScore = this.userData.highScore || 0;
-
-    this.highScoreText = this.add.text(275, 23, highScore.toString(), {
-      fontSize: '14px',
-      color: '#ffd700',
-      fontStyle: 'bold'
-    });
-  }
-
-  private createRankDisplay() {
-    const bg = this.add.graphics();
-    bg.fillStyle(0x000000, 0.7);
-    bg.fillRoundedRect(125, 5, 110, 40, 8);
-    bg.lineStyle(1, 0xffd700);
-    bg.strokeRoundedRect(125, 5, 110, 40, 8);
-
-    this.add.text(130, 8, '📊', { fontSize: '20px' });
-    this.add.text(160, 8, 'Rank:', { fontSize: '12px', color: '#ffffff' });
-
-    this.rankText = this.add.text(175, 23, `#${this.playerRank}`, {
-      fontSize: '14px',
-      color: '#ffd700',
-      fontStyle: 'bold'
-    });
-  }
-
-  private createMenuButtons() {
-    const buttonWidth = 160;
-    const buttonHeight = 45;
-    const startX = 180;
-    const startY = 280;
-
-    const buttons: MenuButton[] = [
-      { text: '▶ PLAY GAME', color: '#4CAF50', scene: 'FlappyBirdGameScene' },
-      { text: '🏆 LEADERBOARD', color: '#2196F3', scene: 'FlappyBirdLeaderboardScene' },
-      { text: '👤 PROFILE', color: '#9C27B0', scene: 'FlappyBirdProfileScene' },
-      { text: '📊 MY SCORES', color: '#FF9800', scene: 'FlappyBirdScoresScene' },
-      {
-        text: '🏆 TOURNAMENT',
-        color: '#9C27B0',
-        scene: 'PrizeTournamentScene'
-      },
-      {
-        text: '🎮 BACK TO GAMES',
-        color: '#FF5722',
-        isExternal: true,
-        url: 'https://wintapgames.com/games'
+    if (!this.textures.exists('bird-frame1')) {
+      this.add.text(180, 148, '🐦', { fontSize: '44px' }).setOrigin(0.5).setDepth(10);
+    } else {
+      if (!this.anims.exists('fly-start')) {
+        this.anims.create({
+          key: 'fly-start',
+          frames: [{ key: 'bird-frame1' }, { key: 'bird-frame2' }],
+          frameRate: 6, repeat: -1,
+        });
       }
+      this.birdSprite = this.add.sprite(180, 148, 'bird-frame1').setScale(0.18).setDepth(10);
+      this.birdSprite.play('fly-start');
+      this.tweens.add({ targets: this.birdSprite, y: 138, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    }
+  }
+
+  // ─── Stat bar ──────────────────────────────────────────────────────────────
+  private addStatBar() {
+    if (!this.userData) return;
+
+    const bg = this.add.graphics().setDepth(9);
+    bg.fillStyle(C.PANEL_FILL, C.PANEL_ALPHA);
+    bg.fillRoundedRect(8, 184, 344, 50, 12);
+    bg.lineStyle(1.5, C.PANEL_STROKE, C.PANEL_STROKE_A);
+    bg.strokeRoundedRect(8, 184, 344, 50, 12);
+
+    const stats = [
+      { x: 46,  label: 'BAL',   value: `$${this.balance.toFixed(2)}` },
+      { x: 136, label: 'RANK',  value: `#${this.playerRank || '—'}`  },
+      { x: 226, label: 'BEST',  value: `${this.userData.highScore || 0}` },
+      { x: 316, label: 'GAMES', value: `${this.userData.totalGames || 0}` },
     ];
 
-    buttons.forEach((btn, index) => {
-      const yPos = startY + (index * 55);
-
-      const bg = this.add.graphics();
-      bg.fillStyle(Phaser.Display.Color.HexStringToColor(btn.color).color, 1);
-      bg.fillRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
-      bg.lineStyle(2, 0xffffff, 1);
-      bg.strokeRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
-
-      const button = this.add.text(startX, yPos, btn.text, {
-        fontSize: '16px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-        stroke: '#000000',
-        strokeThickness: 2
-      })
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true });
-
-      button.on('pointerover', () => {
-        button.setStyle({ color: '#ffff00' });
-        button.setScale(1.05);
-
-        bg.clear();
-        bg.fillStyle(Phaser.Display.Color.HexStringToColor(btn.color).color, 1);
-        bg.fillRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
-        bg.lineStyle(3, 0xffff00, 2);
-        bg.strokeRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
-      });
-
-      button.on('pointerout', () => {
-        button.setStyle({ color: '#ffffff' });
-        button.setScale(1);
-
-        bg.clear();
-        bg.fillStyle(Phaser.Display.Color.HexStringToColor(btn.color).color, 1);
-        bg.fillRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
-        bg.lineStyle(2, 0xffffff, 1);
-        bg.strokeRoundedRect(startX - buttonWidth / 2, yPos - buttonHeight / 2, buttonWidth, buttonHeight, 12);
-      });
-
-      // *** ADD THE CLICK HANDLER HERE ***
-      button.on('pointerdown', () => {
-        // Check if it's an external link
-        if (btn.isExternal && btn.url) {
-          // Redirect to external URL
-          window.location.href = btn.url;
-          return;
-        }
-
-        // Otherwise handle as internal game scene
-        if (btn.text === '▶ PLAY GAME') {
-          if (this.balance < 1) {
-            this.showInsufficientFunds();
-            return;
-          }
-
-          this.deductGameFee().then(success => {
-            if (success) {
-              this.balance -= 1;
-              if (this.userData) {
-                this.userData.balance = this.balance;
-              }
-              this.balanceText.setText(`$${this.balance.toFixed(2)}`);
-
-              this.tweens.add({
-                targets: this.balanceText,
-                scale: 1.3,
-                color: '#ff0000',
-                duration: 200,
-                yoyo: true,
-                onComplete: () => {
-                  this.scene.start(btn.scene!, {
-                    username: this.username,
-                    uid: this.uid,
-                    userData: this.userData
-                  });
-                }
-              });
-            } else {
-              this.showError('Failed to process payment');
-            }
-          });
-        } else if (btn.scene) {
-          // For other internal scenes
-          this.scene.start(btn.scene, {
-            username: this.username,
-            uid: this.uid,
-            userData: this.userData
-          });
-        }
-      });
-
-      this.menuButtons.push(button);
-    });
-  }
-
-  private async deductGameFee(): Promise<boolean> {
-    if (!this.userData || !this.uid) {
-      console.error('❌ No user data or UID for fee deduction');
-      return false;
-    }
-
-    try {
-      console.log('💰 Deducting $1 game fee for:', this.userData.username);
-
-      const success = await deductFlappyBirdWalletBalance(
-        this.uid,
-        1,  // amount to deduct
-        'Flappy Bird game entry fee'
-      );
-
-      if (success) {
-        console.log('✅ Game fee deducted successfully');
-      } else {
-        console.log('❌ Failed to deduct game fee');
+    stats.forEach((s, i) => {
+      // Divider
+      if (i > 0) {
+        const d = this.add.graphics().setDepth(10);
+        d.lineStyle(1, 0xffffff, 0.3);
+        d.beginPath(); d.moveTo(s.x - 44, 192); d.lineTo(s.x - 44, 226); d.strokePath();
       }
 
-      return success;
+      // Label — muted sky-white, small, navy stroke keeps it crisp
+      this.add.text(s.x, 196, s.label, {
+        fontSize: '9px', color: C.MUTED,
+        stroke: C.NAVY, strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
 
-    } catch (error) {
-      console.error('❌ Error deducting game fee:', error);
-      return false;
-    }
+      // Value — white, bold, navy stroke
+      const val = this.add.text(s.x, 213, s.value, {
+        fontSize: '14px', color: C.WHITE, fontStyle: 'bold',
+        stroke: C.NAVY, strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
+
+      if (i === 0) this.balanceText = val;
+    });
   }
 
+  // ─── Welcome text ──────────────────────────────────────────────────────────
+  private addWelcome() {
+    if (!this.userData) return;
+    this.add.text(180, 246, `Welcome, ${this.userData.displayName}!`, {
+      fontSize: '15px', color: C.WHITE, fontStyle: 'bold',
+      stroke: C.NAVY, strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(10);
+
+    this.add.text(180, 264, `${this.userData.rank}  ·  Level ${this.userData.level}`, {
+      fontSize: '11px', color: C.WHITE,
+      stroke: C.NAVY, strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(10);
+  }
+
+  // ─── Buttons ───────────────────────────────────────────────────────────────
+  private addButtons() {
+    const cx = 180, startY = 292, gap = 52;
+    const W = 230, H = 46;
+    const hasBlueBtn = this.textures.exists('blue-button');
+
+    const defs: Array<{ label: string; primary: boolean; action?: string; scene?: string; url?: string }> = [
+      { label: '▶  PLAY GAME',      primary: true,  action: 'play' },
+      { label: '🏆  LEADERBOARD',   primary: false, scene: 'FlappyBirdLeaderboardScene' },
+      { label: '👤  PROFILE',       primary: false, scene: 'FlappyBirdProfileScene' },
+      { label: '📊  MY SCORES',     primary: false, scene: 'FlappyBirdScoresScene' },
+      { label: '🏆  TOURNAMENT',    primary: false, scene: 'PrizeTournamentScene' },
+      { label: '🎮  BACK TO GAMES', primary: false, url: 'https://wintapgames.com/games' },
+    ];
+
+    defs.forEach((def, i) => {
+      const y = startY + i * gap;
+
+      // Button image or fallback rect
+      let img: Phaser.GameObjects.Image | Phaser.GameObjects.Graphics;
+      if (hasBlueBtn) {
+        img = this.add.image(0, 0, 'blue-button').setDisplaySize(W, H);
+        // Primary gets warm gold tint; secondary keeps the default blue
+        (img as Phaser.GameObjects.Image).setTint(def.primary ? 0xffe040 : 0xffffff);
+      } else {
+        const g = this.add.graphics();
+        g.fillStyle(def.primary ? 0xffc200 : 0x1255aa, 0.92);
+        g.fillRoundedRect(-W/2, -H/2, W, H, 12);
+        g.lineStyle(2, 0xffffff, 0.75);
+        g.strokeRoundedRect(-W/2, -H/2, W, H, 12);
+        img = g;
+      }
+
+      // Label text colour:
+      // — Primary (gold button): dark navy so it contrasts the gold
+      // — Secondary (blue button): white
+      const txtColor = def.primary ? C.NAVY : C.WHITE;
+
+      const lbl = this.add.text(0, 0, def.label, {
+        fontSize: '15px', color: txtColor, fontStyle: 'bold',
+        stroke: def.primary ? C.WHITE : C.NAVY,
+        strokeThickness: 1,
+      }).setOrigin(0.5);
+
+      const container = this.add.container(cx, y, [img as any, lbl]);
+      container.setSize(W, H).setInteractive({ useHandCursor: true }).setDepth(20);
+
+      const defaultTint = def.primary ? 0xffe040 : 0xffffff;
+
+      container.on('pointerover', () => {
+        this.tweens.add({ targets: container, scaleX: 1.06, scaleY: 1.06, duration: 75 });
+        if (hasBlueBtn) (img as Phaser.GameObjects.Image).setTint(0xffff88);
+        lbl.setColor(def.primary ? C.NAVY : C.YELLOW);
+      });
+      container.on('pointerout', () => {
+        this.tweens.add({ targets: container, scaleX: 1, scaleY: 1, duration: 75 });
+        if (hasBlueBtn) (img as Phaser.GameObjects.Image).setTint(defaultTint);
+        lbl.setColor(txtColor);
+      });
+      container.on('pointerdown', () => {
+        this.tweens.add({
+          targets: container, scaleX: 0.95, scaleY: 0.95,
+          duration: 55, yoyo: true,
+          onComplete: () => this.onButton(def),
+        });
+      });
+    });
+  }
+
+  private onButton(def: { action?: string; scene?: string; url?: string }) {
+    if (def.url)            { window.location.href = def.url; return; }
+    if (def.action === 'play') { this.balance < 1 ? this.showInsufficientFunds() : this.doPlay(); return; }
+    if (def.scene)          { this.scene.start(def.scene, { username: this.username, uid: this.uid, userData: this.userData }); }
+  }
+
+  private async doPlay() {
+    const ok = await deductFlappyBirdWalletBalance(this.uid, 1, 'Flappy Bird entry fee');
+    if (!ok) { this.showError('Payment failed. Please try again.'); return; }
+
+    this.balance -= 1;
+    if (this.userData) this.userData.balance = this.balance;
+    this.balanceText?.setText(`$${this.balance.toFixed(2)}`);
+
+    this.tweens.add({
+      targets: this.balanceText, alpha: 0.2, duration: 120, yoyo: true, repeat: 1,
+      onComplete: () => this.scene.start('FlappyBirdGameScene', {
+        username: this.username, uid: this.uid, userData: this.userData,
+      }),
+    });
+  }
+
+  // ─── Keyboard ──────────────────────────────────────────────────────────────
+  private setupKeyboard() {
+    if (!this.input.keyboard) return;
+    const go = () => this.balance < 1 ? this.showInsufficientFunds() : this.doPlay();
+    this.input.keyboard.off('keydown-ENTER').on('keydown-ENTER', go);
+    this.input.keyboard.off('keydown-SPACE').on('keydown-SPACE', go);
+  }
+
+  // ─── Popups ────────────────────────────────────────────────────────────────
   private showInsufficientFunds() {
-    const popup = this.add.graphics();
-    popup.fillStyle(0x000000, 0.9);
-    popup.fillRoundedRect(40, 200, 280, 150, 10);
-    popup.lineStyle(2, 0xff0000, 1);
-    popup.strokeRoundedRect(40, 200, 280, 150, 10);
+    const overlay = this.add.graphics().setDepth(50);
+    overlay.fillStyle(0x000000, 0.6);
+    overlay.fillRect(0, 0, 360, 640);
 
-    this.add.text(180, 230, '⚠️', {
-      fontSize: '40px',
-      color: '#ff0000'
+    const card = this.add.graphics().setDepth(51);
+    card.fillStyle(0xffffff, 0.97);
+    card.fillRoundedRect(40, 218, 280, 186, 16);
+    card.lineStyle(3, 0x1199dd, 1);
+    card.strokeRoundedRect(40, 218, 280, 186, 16);
+
+    const parts: Phaser.GameObjects.GameObject[] = [overlay, card];
+
+    parts.push(this.add.text(180, 256, '💸', { fontSize: '42px' }).setOrigin(0.5).setDepth(52));
+    parts.push(this.add.text(180, 302, 'Insufficient Funds!', {
+      fontSize: '18px', color: C.NAVY, fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(52));
+    parts.push(this.add.text(180, 328, `You need $1.00\nYou have $${this.balance.toFixed(2)}`, {
+      fontSize: '13px', color: '#555555', align: 'center',
+    }).setOrigin(0.5).setDepth(52));
+
+    const hasBtn = this.textures.exists('blue-button');
+    const btnImg = hasBtn
+      ? this.add.image(0, 0, 'blue-button').setDisplaySize(130, 42)
+      : (() => { const g = this.add.graphics(); g.fillStyle(0x1199dd); g.fillRoundedRect(-65,-21,130,42,10); return g; })();
+    const btnLbl = this.add.text(0, 0, 'OK', {
+      fontSize: '15px', color: C.NAVY, fontStyle: 'bold',
     }).setOrigin(0.5);
 
-    this.add.text(180, 280, 'Insufficient Funds!', {
-      fontSize: '18px',
-      color: '#ffffff',
-      fontStyle: 'bold'
-    }).setOrigin(0.5);
+    const btn = this.add.container(180, 374, [btnImg as any, btnLbl]).setDepth(53);
+    btn.setSize(130, 42).setInteractive({ useHandCursor: true });
+    parts.push(btn);
 
-    this.add.text(180, 310, `Need $1 (You have $${this.balance.toFixed(2)})`, {
-      fontSize: '14px',
-      color: '#ffff00'
-    }).setOrigin(0.5);
-
-    const closeBtn = this.add.text(180, 340, 'OK', {
-      fontSize: '16px',
-      color: '#ffffff',
-      backgroundColor: '#4CAF50',
-      padding: { x: 20, y: 5 }
-    })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-
-    closeBtn.on('pointerdown', () => {
-      popup.destroy();
-      closeBtn.destroy();
-    });
-
-    this.time.delayedCall(2000, () => {
-      popup.destroy();
-      closeBtn.destroy();
-    });
+    const destroy = () => parts.forEach(p => p.destroy());
+    btn.on('pointerdown', destroy);
+    this.time.delayedCall(3500, () => { try { destroy(); } catch (_) {} });
   }
 
+  private showLoading() {
+    this.loadingText = this.add.text(180, 320, 'LOADING...', {
+      fontSize: '22px', color: C.WHITE, fontStyle: 'bold',
+      stroke: C.NAVY, strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(20);
+  }
+
+  private showError(msg: string) {
+    this.loadingText?.destroy();
+    const ov = this.add.graphics().setDepth(40);
+    ov.fillStyle(0x000000, 0.6); ov.fillRect(0, 0, 360, 640);
+    this.add.text(180, 220, '❌', { fontSize: '48px' }).setOrigin(0.5).setDepth(41);
+    this.add.text(180, 280, msg, {
+      fontSize: '16px', color: C.WHITE, stroke: C.NAVY, strokeThickness: 2,
+      wordWrap: { width: 300 },
+    }).setOrigin(0.5).setDepth(41);
+    this.add.text(180, 340, '🔄 TRY AGAIN', {
+      fontSize: '17px', color: C.WHITE,
+      backgroundColor: '#0077cc', padding: { x: 16, y: 8 },
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(41)
+      .on('pointerdown', () => this.scene.restart({ username: this.username, uid: this.uid }));
+  }
+
+  // ─── Footer ────────────────────────────────────────────────────────────────
   private addFooter() {
-    this.add.text(340, 620, 'v1.0.0', {
-      fontSize: '10px',
-      color: '#666666'
-    }).setOrigin(1, 0);
-  }
-
-  private setupInputHandlers() {
-    if (this.input.keyboard) {
-      this.input.keyboard.on('keydown-ENTER', () => {
-        if (this.userData && this.balance >= 1) {
-          this.scene.start('FlappyBirdGameScene', {
-            username: this.username,
-            uid: this.uid,
-            userData: this.userData
-          });
-        } else {
-          this.showInsufficientFunds();
-        }
-      });
-      this.input.keyboard.on('keydown-SPACE', () => {
-        if (this.userData && this.balance >= 1) {
-          this.scene.start('FlappyBirdGameScene', {
-            username: this.username,
-            uid: this.uid,
-            userData: this.userData
-          });
-        } else {
-          this.showInsufficientFunds();
-        }
-      });
-    }
+    this.add.text(180, 624, 'wintapgames.com  ·  v1.0.0', {
+      fontSize: '9px', color: C.WHITE,
+      stroke: C.NAVY, strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(10);
   }
 }

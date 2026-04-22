@@ -7,7 +7,8 @@ export default defineConfig({
       'flappy-games.onrender.com',
       '.onrender.com',  // This allows ALL subdomains of onrender.com
       'localhost',
-      '.localhost'
+      '.localhost',
+      '.wintapgames.com'
     ],
     port: 10000,
     strictPort: true,
@@ -18,7 +19,8 @@ export default defineConfig({
       'flappy-games.onrender.com',
       '.onrender.com',
       'localhost',
-      '.localhost'
+      '.localhost',
+       '.wintapgames.com'
     ],
     port: 10000,
     strictPort: true,

@@ -28,7 +28,7 @@ import { SkyShooterLobbyScene } from './scenes/sky-shooter/SkyShooterLobbyScene'
 import { BallCrushLoaderScene } from './scenes/ball-crush/BallCrushLoaderScene';
 import { BallCrushStartScene } from './scenes/ball-crush/BallCrushStartScene';
 import { BallCrushGameScene } from './scenes/ball-crush/BallCrushGameScene';
-import { BallCrushScoresScene } from './scenes/ball-crush/BallCrushScoresScene';
+import {  BallCrushStatsScene } from './scenes/ball-crush/BallCrushScoresScene';
 import { BallCrushGameOverScene } from './scenes/ball-crush/BallCrushGameOverScene';
 import { BallCrushProfileScene } from './scenes/ball-crush/BallCrushProfileScene';
 import { BallCrushLeaderboardScene } from './scenes/ball-crush/BallCrushLeaderboardScene';
@@ -49,9 +49,7 @@ import { CheckersProfileScene } from './scenes/checkers/CheckersProfileScene';
 import { CheckersTestSkillScene } from './scenes/checkers/CheckersTestSkillScene';
 import { CheckersLobbyScene } from './scenes/checkers/CheckersLobbyScene';
 import { CheckersMatchmakingScene } from './scenes/checkers/CheckersMatchmakingScene';
-import { CheckersSocketTestScene } from './scenes/TestScene';
-import { TestStartScene } from './scenes/TestStartScene';
-import { CheckersTestLobbyScene } from './scenes/CheckersTestLobbyScene';
+
 
 
 // Determine which game to load based on URL path
@@ -177,7 +175,7 @@ const getGameScenes = () => {
                 BallCrushMatchmakingScene,
                 BallCrushLobbyScene,
                 BallCrushGameScene,
-                BallCrushScoresScene,
+                BallCrushStatsScene,
                 BallCrushGameOverScene,
                 BallCrushProfileScene,
                 BallCrushLeaderboardScene
