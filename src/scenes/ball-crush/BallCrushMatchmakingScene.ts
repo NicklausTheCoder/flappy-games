@@ -16,7 +16,6 @@ import { io, Socket } from 'socket.io-client';
 import { updateBallCrushWalletBalance } from '../../firebase/ballCrushSimple';
 
 const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'https://game-server-xvdu.onrender.com';
-// const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001';
 
 export class BallCrushMatchmakingScene extends Phaser.Scene {
   private username: string = '';

@@ -4,266 +4,170 @@ import { CheckersUserData } from '../../firebase/checkersService';
 
 export class CheckersProfileScene extends Phaser.Scene {
   private userData!: CheckersUserData;
-  private username: string = '';
-  private uid: string = '';
-  private backButton!: Phaser.GameObjects.Text;
-  private walletButton!: Phaser.GameObjects.Text;
-  private editButton!: Phaser.GameObjects.Text;
-  
+  private username:  string = '';
+  private uid:       string = '';
+
+  private boardSquares: Array<{ obj: Phaser.GameObjects.Rectangle; drift: number }> = [];
+
   constructor() {
     super({ key: 'CheckersProfileScene' });
   }
-  
+
   init(data: { userData: CheckersUserData; username?: string; uid?: string }) {
-    console.log('👤 CheckersProfileScene initialized');
-    
-    if (!data || !data.userData) {
-      console.error('❌ No user data received');
-      this.scene.start('CheckersStartScene');
-      return;
-    }
-    
-    this.userData = data.userData;
-    this.username = data.username || this.userData.username || '';
-    this.uid = data.uid || '';
-    
-    console.log('📥 Profile data:', this.userData);
+    if (!data?.userData) { this.scene.start('CheckersStartScene'); return; }
+    this.userData    = data.userData;
+    this.username    = data.username || this.userData.username || '';
+    this.uid         = data.uid      || '';
+    this.boardSquares = [];
   }
-  
+
   create() {
-    // Background
-    this.cameras.main.setBackgroundColor('#16213e');
-    
-    // Title
-    this.add.text(180, 30, '♟️ CHECKERS PROFILE', {
-      fontSize: '24px',
-      color: '#ffd700',
-      fontStyle: 'bold',
-      stroke: '#000000',
-      strokeThickness: 3
-    }).setOrigin(0.5);
-    
-    // Profile card background
-    const card = this.add.graphics();
-    card.fillStyle(0x0f3460, 0.8);
-    card.fillRoundedRect(20, 60, 320, 440, 15);
-    card.lineStyle(2, 0xffd700);
-    card.strokeRoundedRect(20, 60, 320, 440, 15);
-    
-    // Avatar placeholder (larger)
-    this.add.text(40, 100, '♟️', { fontSize: '64px' });
-    
-    // Username and display name
-    this.add.text(160, 90, this.userData.displayName, {
-      fontSize: '22px',
-      color: '#ffffff',
-      fontStyle: 'bold'
-    });
-    
-    this.add.text(160, 120, `@${this.userData.username}`, {
-      fontSize: '16px',
-      color: '#cccccc'
-    });
-    
-    // Member since
-    const joinDate = new Date(this.userData.createdAt).toLocaleDateString();
-    this.add.text(160, 145, `Joined: ${joinDate}`, {
-      fontSize: '12px',
-      color: '#888888'
-    });
-    
-    // Divider line
-    const line = this.add.graphics();
-    line.lineStyle(1, 0x444444, 1);
-    line.lineBetween(30, 175, 330, 175);
-    
-    // Calculate win rate
-    const winRate = this.userData.gamesPlayed > 0 
-      ? Math.round((this.userData.gamesWon / this.userData.gamesPlayed) * 100) 
+    this.addBackground();
+
+    const winRate = this.userData.gamesPlayed > 0
+      ? Math.round((this.userData.gamesWon / this.userData.gamesPlayed) * 100)
       : 0;
-    
-    // Get Checkers-specific winnings
     const checkersWinnings = this.userData.winnings?.checkers?.total || 0;
-    const winsCount = this.userData.winnings?.checkers?.count || 0;
-    
-    // Stats grid
-    let yPos = 190;
-    const stats = [
-      { label: 'Rank', value: this.userData.rank, icon: '🏆', color: '#ffd700' },
-      { label: 'Level', value: this.userData.level.toString(), icon: '📊', color: '#00ff00' },
-      { label: 'Experience', value: this.userData.experience.toString(), icon: '✨', color: '#00ffff' },
-      { label: 'Games Played', value: this.userData.gamesPlayed.toString(), icon: '🎮', color: '#2196F3' },
-      { label: 'Games Won', value: this.userData.gamesWon.toString(), icon: '🏅', color: '#4CAF50' },
-      { label: 'Games Lost', value: this.userData.gamesLost.toString(), icon: '💔', color: '#f44336' },
-      { label: 'Win Rate', value: `${winRate}%`, icon: '📈', color: winRate >= 70 ? '#00ff00' : winRate >= 50 ? '#ffff00' : '#ff6666' },
-      { label: 'Current Streak', value: this.userData.winStreak.toString(), icon: '🔥', color: '#FF9800' },
-      { label: 'Best Streak', value: this.userData.bestWinStreak.toString(), icon: '⭐', color: '#ffd700' }
+    const winsCount        = this.userData.winnings?.checkers?.count || 0;
+
+    // ── Title ──
+    const titleBg = this.add.graphics().setDepth(9);
+    titleBg.fillStyle(0x2a1200, 0.95);
+    titleBg.fillRoundedRect(24, 18, 312, 56, 14);
+    titleBg.lineStyle(2, 0xffaa00, 0.85);
+    titleBg.strokeRoundedRect(24, 18, 312, 56, 14);
+    this.add.text(180, 46, '♟  PROFILE', {
+      fontSize: '24px', color: '#ffaa00', fontStyle: 'bold',
+      stroke: '#3d1a00', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(10);
+
+    // ── Profile card ──
+    const profileCard = this.add.graphics().setDepth(9);
+    profileCard.fillStyle(0x2a1200, 0.95);
+    profileCard.fillRoundedRect(22, 86, 316, 90, 12);
+    profileCard.lineStyle(1.5, 0xffaa00, 0.7);
+    profileCard.strokeRoundedRect(22, 86, 316, 90, 12);
+
+    // Piece avatar
+    this.add.circle(72, 131, 26, 0x3d1a00, 1).setDepth(10);
+    this.add.circle(72, 131, 22, 0xcc2200, 1).setDepth(11);
+    this.add.circle(72, 131, 14, 0xdd3300, 1).setDepth(12);
+    this.add.circle(63, 122,  6, 0xffffff, 0.25).setDepth(13);
+    this.add.text(72, 131, '♛', { fontSize: '14px', color: '#ffaa00' }).setOrigin(0.5).setDepth(14);
+
+    this.add.text(108, 98,  this.userData.displayName, {
+      fontSize: '18px', color: '#ffffff', fontStyle: 'bold',
+      stroke: '#3d1a00', strokeThickness: 2,
+    }).setDepth(10);
+    this.add.text(108, 122, `@${this.userData.username}`, {
+      fontSize: '13px', color: '#ffaa00', stroke: '#3d1a00', strokeThickness: 1,
+    }).setDepth(10);
+    const joined = new Date(this.userData.createdAt).toLocaleDateString();
+    this.add.text(108, 142, `Joined ${joined}`, {
+      fontSize: '10px', color: '#888888', stroke: '#3d1a00', strokeThickness: 1,
+    }).setDepth(10);
+
+    // ── Stats card ──
+    const statsY = 188;
+    const statsCard = this.add.graphics().setDepth(9);
+    statsCard.fillStyle(0x2a1200, 0.92);
+    statsCard.fillRoundedRect(22, statsY, 316, 228, 12);
+    statsCard.lineStyle(1.5, 0xffaa00, 0.55);
+    statsCard.strokeRoundedRect(22, statsY, 316, 228, 12);
+
+    this.add.text(180, statsY + 12, 'CAREER STATS', {
+      fontSize: '11px', color: '#ffaa00', letterSpacing: 3,
+      stroke: '#3d1a00', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(10);
+
+    const statsData = [
+      { icon: '🏆', label: 'Rank',           value: this.userData.rank,                       color: '#ffaa00' },
+      { icon: '📊', label: 'Level',          value: `${this.userData.level}`,                 color: '#44ff88' },
+      { icon: '🎮', label: 'Games played',   value: `${this.userData.gamesPlayed}`,           color: '#ffffff' },
+      { icon: '🏅', label: 'Games won',      value: `${this.userData.gamesWon}`,              color: '#44ff88' },
+      { icon: '💔', label: 'Games lost',     value: `${this.userData.gamesLost}`,             color: '#ff8888' },
+      { icon: '📈', label: 'Win rate',       value: `${winRate}%`,                            color: winRate >= 50 ? '#44ff88' : '#ffaa44' },
+      { icon: '🔥', label: 'Current streak', value: `${this.userData.winStreak}`,             color: '#ffaa00' },
+      { icon: '⭐', label: 'Best streak',    value: `${this.userData.bestWinStreak}`,         color: '#ffd700' },
+      { icon: '♟', label: 'Pieces captured',value: `${this.userData.piecesCaptured}`,        color: '#ccaa88' },
     ];
-    
-    stats.forEach(stat => {
-      // Icon
-      this.add.text(40, yPos, stat.icon, { fontSize: '18px' });
-      
-      // Label
-      this.add.text(65, yPos, stat.label + ':', { 
-        fontSize: '14px', 
-        color: '#aaaaaa' 
-      });
-      
-      // Value
-      this.add.text(200, yPos, stat.value, { 
-        fontSize: '16px', 
-        color: stat.color,
-        fontStyle: 'bold'
-      });
-      
-      yPos += 25;
+
+    statsData.forEach((s, i) => {
+      const y = statsY + 32 + i * 22;
+      this.add.text(38,  y, s.icon, { fontSize: '13px' }).setDepth(10);
+      this.add.text(58,  y, s.label + ':', { fontSize: '12px', color: '#aaaaaa', stroke: '#3d1a00', strokeThickness: 1 }).setDepth(10);
+      this.add.text(326, y, s.value,  { fontSize: '13px', color: s.color, fontStyle: 'bold', stroke: '#3d1a00', strokeThickness: 1 }).setOrigin(1, 0).setDepth(10);
     });
-    
-    // Game Stats Section
-    yPos += 5;
-    
-    // Small separator
-    const line2 = this.add.graphics();
-    line2.lineStyle(1, 0x444444, 1);
-    line2.lineBetween(30, yPos - 5, 330, yPos - 5);
-    
-    // Game-specific stats
-    const gameStats = [
-      { label: 'Pieces Captured', value: this.userData.piecesCaptured.toString(), icon: '📦', color: '#ffaa00' },
-      { label: 'Kings Made', value: this.userData.kingsMade.toString(), icon: '👑', color: '#ffff00' }
-    ];
-    
-    gameStats.forEach(stat => {
-      // Icon
-      this.add.text(40, yPos, stat.icon, { fontSize: '18px' });
-      
-      // Label
-      this.add.text(65, yPos, stat.label + ':', { 
-        fontSize: '14px', 
-        color: '#aaaaaa' 
-      });
-      
-      // Value
-      this.add.text(200, yPos, stat.value, { 
-        fontSize: '16px', 
-        color: stat.color,
-        fontStyle: 'bold'
-      });
-      
-      yPos += 25;
+
+    // ── Winnings card ──
+    const winningsY = 428;
+    const winCard = this.add.graphics().setDepth(9);
+    winCard.fillStyle(0x2a1200, 0.95);
+    winCard.fillRoundedRect(22, winningsY, 316, 72, 12);
+    winCard.lineStyle(1.5, 0x44ff88, 0.65);
+    winCard.strokeRoundedRect(22, winningsY, 316, 72, 12);
+
+    this.add.text(38,  winningsY + 12, '💰', { fontSize: '26px' }).setDepth(10);
+    this.add.text(74,  winningsY + 14, 'Checkers Winnings', { fontSize: '12px', color: '#aaaaaa', stroke: '#3d1a00', strokeThickness: 1 }).setDepth(10);
+    this.add.text(74,  winningsY + 34, `$${checkersWinnings.toFixed(2)}`, {
+      fontSize: '22px', color: '#44ff88', fontStyle: 'bold',
+      stroke: '#3d1a00', strokeThickness: 2,
+    }).setDepth(10);
+    this.add.text(260, winningsY + 40, `${winsCount} wins`, {
+      fontSize: '12px', color: '#888888', stroke: '#3d1a00', strokeThickness: 1,
+    }).setDepth(10);
+
+    // ── Buttons ──
+    this.buildButton(90,  578, '← BACK',      false, () => this.scene.start('CheckersStartScene', { username: this.username, uid: this.uid, userData: this.userData }));
+    this.buildButton(230, 578, '💰 WALLET',   true,  () => window.open(`https://wintapgames.com/wallet/${this.userData.username}`, '_blank'));
+  }
+
+  update(_t: number, delta: number) {
+    const dt = delta / 1000;
+    this.boardSquares.forEach(s => {
+      s.obj.y -= s.drift * dt;
+      s.obj.angle += s.drift * 0.3 * dt;
+      if (s.obj.y < -20) { s.obj.y = 660; s.obj.x = Phaser.Math.Between(0, 360); }
     });
-    
-    // Winnings info section (Checkers-specific)
-    const winningsBg = this.add.graphics();
-    winningsBg.fillStyle(0x1a1a2e, 0.9);
-    winningsBg.fillRoundedRect(20, yPos + 5, 320, 70, 10);
-    winningsBg.lineStyle(1, 0xffd700);
-    winningsBg.strokeRoundedRect(20, yPos + 5, 320, 70, 10);
-    
-    this.add.text(40, yPos + 15, '💰', { fontSize: '32px' });
-    this.add.text(80, yPos + 20, 'Checkers Winnings:', { fontSize: '14px', color: '#ffffff' });
-    this.add.text(80, yPos + 40, `$${checkersWinnings.toFixed(2)}`, {
-      fontSize: '22px',
-      color: '#00ff00',
-      fontStyle: 'bold'
-    });
-    
-    this.add.text(240, yPos + 40, `${winsCount} wins`, {
-      fontSize: '12px',
-      color: '#888888'
-    });
-    
-    // Last win info if available
-    if (this.userData.winnings?.checkers?.lastWin) {
-      const lastWinDate = new Date(this.userData.winnings.checkers.lastWin).toLocaleDateString();
-      this.add.text(180, yPos + 60, `Last win: ${lastWinDate}`, {
-        fontSize: '10px',
-        color: '#888888'
-      }).setOrigin(0.5);
+  }
+
+  private addBackground() {
+    this.cameras.main.setBackgroundColor('#0f0800');
+    if (this.textures.exists('checkers-bg')) {
+      this.add.image(180, 320, 'checkers-bg').setDisplaySize(360, 640).setDepth(-2);
+      const d = this.add.graphics().setDepth(-1);
+      d.fillStyle(0x000000, 0.72); d.fillRect(0, 0, 360, 640);
     }
-    
-    // Create action buttons
-    this.createWalletButton();
-    this.createEditButton();
-    this.createBackButton();
+    for (let i = 0; i < 10; i++) {
+      const size = Phaser.Math.Between(10, 24);
+      const sq   = this.add.rectangle(
+        Phaser.Math.Between(0,360), Phaser.Math.Between(0,640),
+        size, size, i % 2 === 0 ? 0x8b4513 : 0xdeb887,
+        Phaser.Math.FloatBetween(0.04, 0.11)
+      ).setDepth(0).setAngle(45);
+      this.boardSquares.push({ obj: sq, drift: Phaser.Math.FloatBetween(5, 16) });
+    }
   }
-  
-  private createWalletButton() {
-    this.walletButton = this.add.text(240, 600, '💰 WALLET', {
-      fontSize: '18px',
-      color: '#ffffff',
-      backgroundColor: '#4CAF50',
-      padding: { x: 20, y: 10 }
-    })
-    .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
-    
-    // Hover effect
-    this.walletButton.on('pointerover', () => {
-      this.walletButton.setStyle({ color: '#ffff00', backgroundColor: '#45a049' });
-    });
-    
-    this.walletButton.on('pointerout', () => {
-      this.walletButton.setStyle({ color: '#ffffff', backgroundColor: '#4CAF50' });
-    });
-    
-    // Open wallet URL in new tab
-    this.walletButton.on('pointerdown', () => {
-      const walletUrl = `https://wintapgames.com/wallet/${this.userData.username}`;
-      window.open(walletUrl, '_blank');
-    });
-  }
-  
-  private createEditButton() {
-    this.editButton = this.add.text(180, 560, '✏️ EDIT PROFILE', {
-      fontSize: '18px',
-      color: '#ffffff',
-      backgroundColor: '#2196F3',
-      padding: { x: 20, y: 10 }
-    })
-    .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
-    
-    // Hover effect
-    this.editButton.on('pointerover', () => {
-      this.editButton.setStyle({ color: '#ffff00', backgroundColor: '#1976D2' });
-    });
-    
-    this.editButton.on('pointerout', () => {
-      this.editButton.setStyle({ color: '#ffffff', backgroundColor: '#2196F3' });
-    });
-    
-    // Open edit profile URL in new tab
-    this.editButton.on('pointerdown', () => {
-      const editUrl = `https://wintapgames.com/profile/edit/${this.userData.username}`;
-      window.open(editUrl, '_blank');
-    });
-  }
-  
-  private createBackButton() {
-    this.backButton = this.add.text(40, 583, '← BACK', {
-      fontSize: '16px',
-      color: '#ffffff',
-      backgroundColor: '#f44336',
-      padding: { x: 20, y: 10 }
-    })
-    .setInteractive({ useHandCursor: true });
-    
-    this.backButton.on('pointerover', () => {
-      this.backButton.setStyle({ color: '#ffff00', backgroundColor: '#d32f2f' });
-    });
-    
-    this.backButton.on('pointerout', () => {
-      this.backButton.setStyle({ color: '#ffffff', backgroundColor: '#f44336' });
-    });
-    
-    this.backButton.on('pointerdown', () => {
-      this.scene.start('CheckersStartScene', {
-        username: this.username,
-        uid: this.uid,
-        userData: this.userData
-      });
-    });
+
+  private buildButton(x: number, y: number, label: string, primary: boolean, cb: () => void) {
+    const hasBtn = this.textures.exists('wood-button');
+    let imgObj: Phaser.GameObjects.Image | Phaser.GameObjects.Graphics;
+    if (hasBtn) {
+      imgObj = this.add.image(0, 0, 'wood-button').setDisplaySize(148, 42);
+      (imgObj as Phaser.GameObjects.Image).setTint(primary ? 0xffdd99 : 0xcc9966);
+    } else {
+      const g = this.add.graphics();
+      g.fillStyle(primary ? 0xd4813a : 0x8b4513, 0.95);
+      g.fillRoundedRect(-74,-21,148,42,10);
+      imgObj = g;
+    }
+    const lbl = this.add.text(0, 0, label, {
+      fontSize: '13px', color: '#3d1a00', fontStyle: 'bold', stroke: '#8b4513', strokeThickness: 1,
+    }).setOrigin(0.5);
+    const c = this.add.container(x, y, [imgObj as any, lbl]).setDepth(20);
+    c.setSize(148, 42).setInteractive({ useHandCursor: true });
+    c.on('pointerover',  () => { lbl.setColor('#ffaa00'); this.tweens.add({ targets:c, scaleX:1.05, scaleY:1.05, duration:75 }); });
+    c.on('pointerout',   () => { lbl.setColor('#3d1a00'); this.tweens.add({ targets:c, scaleX:1,    scaleY:1,    duration:75 }); });
+    c.on('pointerdown',  () => { this.tweens.add({ targets:c, scaleX:0.95, scaleY:0.95, duration:55, yoyo:true, onComplete:cb }); });
   }
 }

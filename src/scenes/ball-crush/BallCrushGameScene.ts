@@ -3,7 +3,7 @@ import Phaser from 'phaser';
 import { io, Socket } from 'socket.io-client';
 
 const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'https://game-server-xvdu.onrender.com';
-// const SERVER_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001';
+
 
 interface GameState {
   ball: { x: number; y: number };

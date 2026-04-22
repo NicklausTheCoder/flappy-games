@@ -3,298 +3,177 @@ import Phaser from 'phaser';
 import { getCheckersUserData, CheckersUserData } from '../../firebase/checkersService';
 
 export class CheckersStatsScene extends Phaser.Scene {
-    private username: string = '';
-    private uid: string = '';
-    private userData: CheckersUserData | null = null;
-    private loadingText!: Phaser.GameObjects.Text;
-    private errorText!: Phaser.GameObjects.Text;
+  private username:  string = '';
+  private uid:       string = '';
+  private userData:  CheckersUserData | null = null;
+  private loadingText!: Phaser.GameObjects.Text;
 
-    constructor() {
-        super({ key: 'CheckersStatsScene' });
+  private boardSquares: Array<{ obj: Phaser.GameObjects.Rectangle; drift: number }> = [];
+
+  constructor() {
+    super({ key: 'CheckersStatsScene' });
+  }
+
+  init(data: { username?: string; uid?: string }) {
+    this.username    = data?.username || '';
+    this.uid         = data?.uid      || '';
+    this.boardSquares = [];
+  }
+
+  async create() {
+    this.addBackground();
+
+    const titleBg = this.add.graphics().setDepth(9);
+    titleBg.fillStyle(0x2a1200, 0.95);
+    titleBg.fillRoundedRect(24, 18, 312, 56, 14);
+    titleBg.lineStyle(2, 0xffaa00, 0.85);
+    titleBg.strokeRoundedRect(24, 18, 312, 56, 14);
+    this.add.text(180, 46, '📊  MY STATS', {
+      fontSize: '22px', color: '#ffaa00', fontStyle: 'bold',
+      stroke: '#3d1a00', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(10);
+
+    this.loadingText = this.add.text(180, 300, 'LOADING...', {
+      fontSize: '20px', color: '#ffaa00', fontStyle: 'bold',
+      stroke: '#3d1a00', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(10);
+
+    await this.loadUserData();
+    this.loadingText.destroy();
+
+    if (!this.userData) {
+      this.add.text(180, 280, '❌', { fontSize: '48px' }).setOrigin(0.5).setDepth(10);
+      this.add.text(180, 340, 'Failed to load stats', {
+        fontSize: '16px', color: '#ffffff', stroke: '#3d1a00', strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
+    } else {
+      this.displayStats();
     }
 
-    init(data: { username?: string; uid?: string }) {
-        console.log('♟️ CheckersStatsScene initialized');
-        this.username = data?.username || '';
-        this.uid = data?.uid || '';
+    this.buildBackButton();
+    this.buildRefreshButton();
+  }
 
-        if (!this.uid) {
-            console.error('❌ No UID provided to CheckersStatsScene');
-        }
+  update(_t: number, delta: number) {
+    const dt = delta / 1000;
+    this.boardSquares.forEach(s => {
+      s.obj.y -= s.drift * dt;
+      s.obj.angle += s.drift * 0.3 * dt;
+      if (s.obj.y < -20) { s.obj.y = 660; s.obj.x = Phaser.Math.Between(0, 360); }
+    });
+  }
+
+  private async loadUserData() {
+    try {
+      if (!this.uid) return;
+      this.userData = await getCheckersUserData(this.uid);
+    } catch (e) { console.error('❌', e); }
+  }
+
+  private displayStats() {
+    if (!this.userData) return;
+
+    const winRate          = this.userData.gamesPlayed > 0 ? Math.round((this.userData.gamesWon / this.userData.gamesPlayed) * 100) : 0;
+    const checkersWinnings = this.userData.winnings?.checkers?.total || 0;
+    const winsCount        = this.userData.winnings?.checkers?.count || 0;
+
+    const makeCard = (y: number, h: number, title: string) => {
+      const card = this.add.graphics().setDepth(9);
+      card.fillStyle(0x2a1200, 0.92);
+      card.fillRoundedRect(22, y, 316, h, 12);
+      card.lineStyle(1.5, 0xffaa00, 0.55);
+      card.strokeRoundedRect(22, y, 316, h, 12);
+      this.add.text(180, y + 12, title, {
+        fontSize: '10px', color: '#ffaa00', letterSpacing: 3, stroke: '#3d1a00', strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(10);
+    };
+
+    const row = (y: number, label: string, value: string, color: string) => {
+      this.add.text(38,  y, label + ':', { fontSize: '13px', color: '#aaaaaa', stroke: '#3d1a00', strokeThickness: 1 }).setDepth(10);
+      this.add.text(326, y, value,        { fontSize: '14px', color, fontStyle: 'bold', stroke: '#3d1a00', strokeThickness: 1 }).setOrigin(1,0).setDepth(10);
+    };
+
+    // ── Rank / Level ──
+    makeCard(90, 56, 'PLAYER');
+    row(110, 'Rank',  this.userData.rank || 'Bronze', '#ffaa00');
+    row(128, 'Level', `${this.userData.level}`,        '#44ff88');
+
+    // ── Games ──
+    makeCard(158, 86, 'GAMES');
+    row(178, 'Played', `${this.userData.gamesPlayed}`, '#ffffff');
+    row(198, 'Won',    `${this.userData.gamesWon}`,    '#44ff88');
+    row(218, 'Lost',   `${this.userData.gamesLost}`,   '#ff8888');
+
+    // ── Performance ──
+    makeCard(256, 90, 'PERFORMANCE');
+    row(276, 'Win rate',       `${winRate}%`,                               winRate >= 50 ? '#44ff88' : '#ffaa44');
+    row(296, 'Current streak', `${this.userData.winStreak}`,                '#ffaa00');
+    row(316, 'Best streak',    `${this.userData.bestWinStreak}`,            '#ffd700');
+
+    // ── Game stats ──
+    makeCard(358, 68, 'GAME STATS');
+    row(378, 'Pieces captured', `${this.userData.piecesCaptured}`, '#ccaa88');
+    row(398, 'Kings made',      `${this.userData.kingsMade}`,      '#ffff88');
+
+    // ── Winnings ──
+    const wCard = this.add.graphics().setDepth(9);
+    wCard.fillStyle(0x2a1200, 0.95);
+    wCard.fillRoundedRect(22, 438, 316, 68, 12);
+    wCard.lineStyle(1.5, 0x44ff88, 0.65);
+    wCard.strokeRoundedRect(22, 438, 316, 68, 12);
+    this.add.text(180, 450, 'CHECKERS WINNINGS', { fontSize: '10px', color: '#44ff88', letterSpacing: 2, stroke: '#3d1a00', strokeThickness: 2 }).setOrigin(0.5).setDepth(10);
+    this.add.text(38,  468, `Total: $${checkersWinnings.toFixed(2)}`, { fontSize: '18px', color: '#44ff88', fontStyle: 'bold', stroke: '#3d1a00', strokeThickness: 2 }).setDepth(10);
+    this.add.text(326, 472, `${winsCount} wins`, { fontSize: '12px', color: '#888888', stroke: '#3d1a00', strokeThickness: 1 }).setOrigin(1,0).setDepth(10);
+  }
+
+  private addBackground() {
+    this.cameras.main.setBackgroundColor('#0f0800');
+    if (this.textures.exists('checkers-bg')) {
+      this.add.image(180, 320, 'checkers-bg').setDisplaySize(360, 640).setDepth(-2);
+      const d = this.add.graphics().setDepth(-1);
+      d.fillStyle(0x000000, 0.72); d.fillRect(0, 0, 360, 640);
     }
-
-    async create() {
-        // Background
-        this.cameras.main.setBackgroundColor('#1a1a2e');
-
-        // Title
-        this.add.text(180, 30, '♟️ CHECKERS STATS', {
-            fontSize: '24px',
-            color: '#ffd700',
-            fontStyle: 'bold',
-            stroke: '#000000',
-            strokeThickness: 3
-        }).setOrigin(0.5);
-
-        // Player name
-        this.add.text(180, 60, `Player: ${this.username}`, {
-            fontSize: '14px',
-            color: '#cccccc'
-        }).setOrigin(0.5);
-
-        // Loading
-        this.loadingText = this.add.text(180, 300, 'LOADING STATS...', {
-            fontSize: '18px',
-            color: '#ffff00'
-        }).setOrigin(0.5);
-
-        // Fetch user data
-        await this.loadUserData();
-
-        this.loadingText.destroy();
-
-        if (!this.userData) {
-            this.showError('Failed to load stats');
-        } else {
-            this.displayStats();
-        }
-
-        this.createBackButton();
-        this.createRefreshButton();
+    for (let i = 0; i < 10; i++) {
+      const sq = this.add.rectangle(
+        Phaser.Math.Between(0,360), Phaser.Math.Between(0,640),
+        Phaser.Math.Between(10,24), Phaser.Math.Between(10,24),
+        i % 2 === 0 ? 0x8b4513 : 0xdeb887, Phaser.Math.FloatBetween(0.04,0.11)
+      ).setDepth(0).setAngle(45);
+      this.boardSquares.push({ obj: sq, drift: Phaser.Math.FloatBetween(5, 16) });
     }
+  }
 
-    private async loadUserData() {
-        try {
-            if (!this.uid) {
-                console.error('❌ Cannot load stats: No UID');
-                return;
-            }
+  private buildBackButton() {
+    this.buildBtn(90, 588, '← BACK', false, () =>
+      this.scene.start('CheckersStartScene', { username: this.username, uid: this.uid })
+    );
+  }
 
-            console.log('📡 Fetching Checkers stats for UID:', this.uid);
-            this.userData = await getCheckersUserData(this.uid);
+  private buildRefreshButton() {
+    this.buildBtn(260, 588, '🔄 REFRESH', true, async () => {
+      await this.loadUserData();
+      this.scene.restart({ username: this.username, uid: this.uid });
+    });
+  }
 
-            if (this.userData) {
-                console.log('✅ Stats loaded:', this.userData);
-            } else {
-                console.log('⚠️ No stats found for user');
-            }
-
-        } catch (error) {
-            console.error('❌ Error loading stats:', error);
-        }
+  private buildBtn(x: number, y: number, label: string, primary: boolean, cb: () => void) {
+    const hasBtn = this.textures.exists('wood-button');
+    let imgObj: Phaser.GameObjects.Image | Phaser.GameObjects.Graphics;
+    if (hasBtn) {
+      imgObj = this.add.image(0, 0, 'wood-button').setDisplaySize(148, 42);
+      (imgObj as Phaser.GameObjects.Image).setTint(primary ? 0xffdd99 : 0xcc9966);
+    } else {
+      const g = this.add.graphics();
+      g.fillStyle(primary ? 0xd4813a : 0x8b4513, 0.95);
+      g.fillRoundedRect(-74,-21,148,42,10); imgObj = g;
     }
-
-    // In CheckersStatsScene.ts, update the displayStats method:
-
-    private displayStats() {
-        if (!this.userData) return;
-
-        // Calculate win rate
-        const winRate = this.userData.gamesPlayed > 0
-            ? Math.round((this.userData.gamesWon / this.userData.gamesPlayed) * 100)
-            : 0;
-
-        // Get Checkers-specific winnings
-        const checkersWinnings = this.userData.winnings?.checkers?.total || 0;
-        const winsCount = this.userData.winnings?.checkers?.count || 0;
-
-        // Rank and Level Card
-        this.createStatCard(30, 90, 150, 80, 'RANK', this.userData.rank || 'Bronze', '#ffd700');
-        this.createStatCard(180, 90, 150, 80, 'LEVEL', `Level ${this.userData.level || 1}`, '#4CAF50');
-
-        // Games Stats Card
-        this.createStatCard(30, 180, 300, 100, 'GAMES', '', '#333333', true);
-
-        this.add.text(60, 205, 'Played:', { fontSize: '14px', color: '#cccccc' });
-        this.add.text(160, 205, this.userData.gamesPlayed.toString(), {
-            fontSize: '20px',
-            color: '#ffffff',
-            fontStyle: 'bold'
-        });
-
-        this.add.text(60, 235, 'Won:', { fontSize: '14px', color: '#cccccc' });
-        this.add.text(160, 235, this.userData.gamesWon.toString(), {
-            fontSize: '20px',
-            color: '#00ff00',
-            fontStyle: 'bold'
-        });
-
-        this.add.text(210, 235, 'Lost:', { fontSize: '14px', color: '#cccccc' });
-        this.add.text(270, 235, this.userData.gamesLost.toString(), {
-            fontSize: '20px',
-            color: '#ff6666',
-            fontStyle: 'bold'
-        });
-
-        // Performance Card
-        this.createStatCard(30, 290, 300, 100, 'PERFORMANCE', '', '#333333', true);
-
-        this.add.text(60, 315, 'Win Rate:', { fontSize: '14px', color: '#cccccc' });
-
-        const winRateColor = winRate >= 70 ? '#00ff00' :
-            winRate >= 50 ? '#ffff00' : '#ff6666';
-
-        this.add.text(160, 315, `${winRate}%`, {
-            fontSize: '20px',
-            color: winRateColor,
-            fontStyle: 'bold'
-        });
-
-        this.add.text(60, 345, 'Current Streak:', { fontSize: '14px', color: '#cccccc' });
-        this.add.text(180, 345, this.userData.winStreak.toString(), {
-            fontSize: '16px',
-            color: this.userData.winStreak > 0 ? '#00ff00' : '#888888',
-            fontStyle: 'bold'
-        });
-
-        this.add.text(60, 370, 'Best Streak:', { fontSize: '14px', color: '#cccccc' });
-        this.add.text(180, 370, this.userData.bestWinStreak.toString(), {
-            fontSize: '16px',
-            color: '#ffd700',
-            fontStyle: 'bold'
-        });
-
-        // Game Stats Card
-        this.createStatCard(30, 400, 300, 100, 'GAME STATS', '', '#333333', true);
-
-        this.add.text(60, 425, 'Pieces Captured:', { fontSize: '14px', color: '#cccccc' });
-        this.add.text(200, 425, this.userData.piecesCaptured.toString(), {
-            fontSize: '16px',
-            color: '#ffaa00',
-            fontStyle: 'bold'
-        });
-
-        this.add.text(60, 455, 'Kings Made:', { fontSize: '14px', color: '#cccccc' });
-        this.add.text(200, 455, this.userData.kingsMade.toString(), {
-            fontSize: '16px',
-            color: '#ffff00',
-            fontStyle: 'bold'
-        });
-
-        // Winnings Card - Now shows Checkers-specific winnings
-        this.createStatCard(30, 510, 300, 70, 'CHECKERS WINNINGS', '', '#00ff00', true);
-
-        this.add.text(60, 535, `Total: $${checkersWinnings.toFixed(2)}`, {
-            fontSize: '18px',
-            color: '#00ff00',
-            fontStyle: 'bold'
-        });
-
-        this.add.text(200, 535, `Wins: ${winsCount}`, {
-            fontSize: '14px',
-            color: '#ffffff'
-        });
-
-        // Last win info if available
-        if (this.userData.winnings?.checkers?.lastWin) {
-            const lastWinDate = new Date(this.userData.winnings.checkers.lastWin).toLocaleDateString();
-            this.add.text(180, 565, `Last win: ${lastWinDate}`, {
-                fontSize: '10px',
-                color: '#888888'
-            }).setOrigin(0.5);
-        }
-    }
-    private createStatCard(x: number, y: number, width: number, height: number,
-        title: string, value: string, color: string, isMultiLine: boolean = false) {
-
-        const bg = this.add.graphics();
-        bg.fillStyle(0x16213e, 0.9);
-        bg.fillRoundedRect(x, y, width, height, 8);
-        bg.lineStyle(1, Phaser.Display.Color.HexStringToColor(color).color);
-        bg.strokeRoundedRect(x, y, width, height, 8);
-
-        if (!isMultiLine) {
-            this.add.text(x + 10, y + 10, title, {
-                fontSize: '12px',
-                color: '#cccccc'
-            });
-
-            this.add.text(x + 10, y + 35, value, {
-                fontSize: '18px',
-                color: color,
-                fontStyle: 'bold'
-            });
-        } else {
-            this.add.text(x + 10, y + 10, title, {
-                fontSize: '12px',
-                color: '#cccccc'
-            });
-        }
-    }
-
-    private showError(message: string) {
-        if (this.loadingText) {
-            this.loadingText.destroy();
-        }
-
-        this.errorText = this.add.text(180, 250, '❌', {
-            fontSize: '48px',
-            color: '#ff0000'
-        }).setOrigin(0.5);
-
-        this.add.text(180, 300, message, {
-            fontSize: '16px',
-            color: '#ffffff'
-        }).setOrigin(0.5);
-
-        this.add.text(180, 350, 'Tap to retry', {
-            fontSize: '14px',
-            color: '#ffff00'
-        }).setOrigin(0.5);
-
-        this.input.once('pointerdown', () => {
-            this.scene.restart({ username: this.username, uid: this.uid });
-        });
-    }
-
-    private createBackButton() {
-        const backBtn = this.add.text(50, 600, '← BACK', {
-            fontSize: '16px',
-            color: '#ffffff',
-            backgroundColor: '#4CAF50',
-            padding: { x: 12, y: 6 }
-        })
-            .setInteractive({ useHandCursor: true });
-
-        backBtn.on('pointerover', () => {
-            backBtn.setStyle({ color: '#ffff00', backgroundColor: '#45a049' });
-        });
-
-        backBtn.on('pointerout', () => {
-            backBtn.setStyle({ color: '#ffffff', backgroundColor: '#4CAF50' });
-        });
-
-        backBtn.on('pointerdown', () => {
-            this.scene.start('CheckersStartScene', {
-                username: this.username,
-                uid: this.uid
-            });
-        });
-    }
-
-    private createRefreshButton() {
-        const refreshBtn = this.add.text(180, 600, '🔄 REFRESH', {
-            fontSize: '16px',
-            color: '#ffffff',
-            backgroundColor: '#2196F3',
-            padding: { x: 12, y: 6 }
-        })
-            .setInteractive({ useHandCursor: true });
-
-        refreshBtn.on('pointerover', () => {
-            refreshBtn.setStyle({ color: '#ffff00', backgroundColor: '#1976D2' });
-        });
-
-        refreshBtn.on('pointerout', () => {
-            refreshBtn.setStyle({ color: '#ffffff', backgroundColor: '#2196F3' });
-        });
-
-        refreshBtn.on('pointerdown', async () => {
-            refreshBtn.setText('⏳ LOADING...');
-            refreshBtn.disableInteractive();
-
-            await this.loadUserData();
-            this.scene.restart({ username: this.username, uid: this.uid });
-        });
-    }
+    const lbl = this.add.text(0, 0, label, {
+      fontSize: '13px', color: '#3d1a00', fontStyle: 'bold', stroke: '#8b4513', strokeThickness: 1,
+    }).setOrigin(0.5);
+    const c = this.add.container(x, y, [imgObj as any, lbl]).setDepth(20);
+    c.setSize(148, 42).setInteractive({ useHandCursor: true });
+    c.on('pointerover',  () => { lbl.setColor('#ffaa00'); this.tweens.add({ targets:c, scaleX:1.05, scaleY:1.05, duration:75 }); });
+    c.on('pointerout',   () => { lbl.setColor('#3d1a00'); this.tweens.add({ targets:c, scaleX:1,    scaleY:1,    duration:75 }); });
+    c.on('pointerdown',  () => { this.tweens.add({ targets:c, scaleX:0.95, scaleY:0.95, duration:55, yoyo:true, onComplete:cb }); });
+  }
 }
