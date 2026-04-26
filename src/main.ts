@@ -28,7 +28,7 @@ import { SkyShooterLobbyScene } from './scenes/sky-shooter/SkyShooterLobbyScene'
 import { BallCrushLoaderScene } from './scenes/ball-crush/BallCrushLoaderScene';
 import { BallCrushStartScene } from './scenes/ball-crush/BallCrushStartScene';
 import { BallCrushGameScene } from './scenes/ball-crush/BallCrushGameScene';
-import {  BallCrushStatsScene } from './scenes/ball-crush/BallCrushScoresScene';
+import { BallCrushStatsScene } from './scenes/ball-crush/BallCrushScoresScene';
 import { BallCrushGameOverScene } from './scenes/ball-crush/BallCrushGameOverScene';
 import { BallCrushProfileScene } from './scenes/ball-crush/BallCrushProfileScene';
 import { BallCrushLeaderboardScene } from './scenes/ball-crush/BallCrushLeaderboardScene';
@@ -49,7 +49,7 @@ import { CheckersProfileScene } from './scenes/checkers/CheckersProfileScene';
 import { CheckersTestSkillScene } from './scenes/checkers/CheckersTestSkillScene';
 import { CheckersLobbyScene } from './scenes/checkers/CheckersLobbyScene';
 import { CheckersMatchmakingScene } from './scenes/checkers/CheckersMatchmakingScene';
-
+import './logger';
 
 
 // Determine which game to load based on URL path
@@ -70,7 +70,7 @@ import { CheckersMatchmakingScene } from './scenes/checkers/CheckersMatchmakingS
     } else {
         console.log(`🎮 No game in path, defaulting to: ${gameId}`);
     }
-
+    window.__LOGS__ = false
     // Store game config
     window.gameConfig = {
         gameId: gameId,
@@ -184,7 +184,7 @@ const getGameScenes = () => {
 
         case 'checkers':
 
-        checkersMultiplayer.startMatchmakingService();
+            checkersMultiplayer.startMatchmakingService();
             scenes.push(
                 CheckersLoaderScene,  // Add this first
                 CheckersStartScene,
@@ -195,7 +195,7 @@ const getGameScenes = () => {
                 CheckersGameOverScene,
                 CheckersLeaderboardScene,  // Add this
                 CheckersStatsScene,  // Add this
-                CheckersTestSkillScene,  // Add this before the real game
+
             );
             break;
 

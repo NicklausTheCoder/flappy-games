@@ -2,6 +2,8 @@
 import Phaser from 'phaser';
 import { multiGameQueries } from '../../firebase/multiGameQueries';
 
+const SERVER_BASE = (import.meta.env.VITE_SOCKET_URL ?? 'https://game-server-xvdu.onrender.com').replace(/\/$/, '');
+
 export class BallCrushLoaderScene extends Phaser.Scene {
   // ── User data ────────────────────────────────────────────────────────
   private username: string = '';
@@ -14,6 +16,8 @@ export class BallCrushLoaderScene extends Phaser.Scene {
   private readonly MIN_LOAD_TIME = 2500;
   private assetsLoaded: boolean = false;
   private loadProgress: number = 0;
+  private serverOk: boolean = false;
+  private serverChecked: boolean = false;
 
   // ── Star field ───────────────────────────────────────────────────────
   private starLayers: Array<Array<{ obj: Phaser.GameObjects.Arc; speed: number }>> = [];
@@ -25,6 +29,9 @@ export class BallCrushLoaderScene extends Phaser.Scene {
   private loadingText!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
   private percentText!: Phaser.GameObjects.Text;
+
+  // ── Error overlay ────────────────────────────────────────────────────
+  private errorOverlay?: Phaser.GameObjects.Container;
 
   // Spinning orb parts
   private orbitAngle: number = 0;
@@ -53,6 +60,8 @@ export class BallCrushLoaderScene extends Phaser.Scene {
     this.orbitAngle     = 0;
     this.orbitBalls     = [];
     this.starLayers     = [];
+    this.serverOk       = false;
+    this.serverChecked  = false;
 
     if (!data?.username) {
       console.error('❌ No username received!');
@@ -79,6 +88,9 @@ export class BallCrushLoaderScene extends Phaser.Scene {
   preload() {
     this.createLoadingUI();
 
+    // Check server health before allowing progress
+    this.checkServer();
+
     this.load.on('progress', (v: number) => this.onProgress(v));
     this.load.on('complete',  ()          => this.onComplete());
 
@@ -94,16 +106,97 @@ export class BallCrushLoaderScene extends Phaser.Scene {
     });
   }
 
-  // ─── create ───────────────────────────────────────────────────────────────
-  create() {
-    // Nothing extra — star field and orb were created in preload UI
+  // ─── Server health check ─────────────────────────────────────────────────
+  private async checkServer() {
+    this.statusText?.setText('Connecting to server...');
+    try {
+      const res = await fetch(`${SERVER_BASE}/health`, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        this.serverOk = true;
+        this.serverChecked = true;
+        this.statusText?.setText('Server connected ✓');
+        console.log('✅ Server reachable');
+        this.tryProceed();
+      } else {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch (err) {
+      this.serverChecked = true;
+      this.serverOk = false;
+      console.error('❌ Server unreachable:', err);
+      this.showServerError();
+    }
   }
+
+  // ─── Show error overlay ──────────────────────────────────────────────────
+  private showServerError() {
+    // Dim background
+    const dim = this.add.graphics().setDepth(50);
+    dim.fillStyle(0x000000, 0.82);
+    dim.fillRect(0, 0, 360, 640);
+
+    // Error card
+    const card = this.add.graphics().setDepth(51);
+    card.fillStyle(0x1a0000, 1);
+    card.fillRoundedRect(30, 220, 300, 200, 16);
+    card.lineStyle(2, 0xff3300, 0.9);
+    card.strokeRoundedRect(30, 220, 300, 200, 16);
+
+    const icon = this.add.text(180, 255, '⚠️', { fontSize: '36px' })
+      .setOrigin(0.5).setDepth(52);
+
+    const title = this.add.text(180, 298, 'SERVER UNAVAILABLE', {
+      fontSize: '15px', color: '#ff4444', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(52);
+
+    const msg = this.add.text(180, 325, 'Could not connect to the\ngame server. Please check\nyour connection and try again.', {
+      fontSize: '12px', color: '#cccccc', align: 'center',
+    }).setOrigin(0.5).setDepth(52);
+
+    // Retry button
+    const btnBg = this.add.graphics().setDepth(52);
+    btnBg.fillStyle(0xffaa00, 1);
+    btnBg.fillRoundedRect(90, 370, 180, 38, 10);
+
+    const btnText = this.add.text(180, 389, '🔄 RETRY', {
+      fontSize: '14px', color: '#000000', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(53);
+
+    // Make button interactive
+    const hitZone = this.add.rectangle(180, 389, 180, 38, 0xffffff, 0)
+      .setInteractive({ useHandCursor: true }).setDepth(54);
+
+    hitZone.on('pointerdown', () => {
+      // Remove overlay and retry
+      [dim, card, icon, title, msg, btnBg, btnText, hitZone].forEach(o => o.destroy());
+      this.serverOk = false;
+      this.serverChecked = false;
+      this.checkServer();
+    });
+
+    // Pulse the button
+    this.tweens.add({
+      targets: btnBg, alpha: 0.75, duration: 700,
+      yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    });
+  }
+
+  // ─── Try to proceed after both checks pass ───────────────────────────────
+  private tryProceed() {
+    if (this.assetsLoaded && this.serverOk) {
+      const elapsed   = Date.now() - this.loadStartTime;
+      const remaining = Math.max(0, this.MIN_LOAD_TIME - elapsed);
+      this.time.delayedCall(remaining, () => this.goToStart());
+    }
+  }
+
+  // ─── create ───────────────────────────────────────────────────────────────
+  create() {}
 
   // ─── update ───────────────────────────────────────────────────────────────
   update(_t: number, delta: number) {
     const dt = delta / 1000;
 
-    // ── Scroll stars ──
     this.starLayers.forEach(layer =>
       layer.forEach(star => {
         star.obj.y += star.speed * dt;
@@ -111,7 +204,6 @@ export class BallCrushLoaderScene extends Phaser.Scene {
       })
     );
 
-    // ── Orbit balls ──
     this.orbitAngle += dt * 75;
     const cx = 180, cy = 285;
     const r1 = 52, r2 = 72;
@@ -125,7 +217,6 @@ export class BallCrushLoaderScene extends Phaser.Scene {
       ball.y = cy + Math.sin(rad) * radius;
     });
 
-    // ── Radar pulse ──
     if (this.radarGfx) {
       this.radarGrowing
         ? (this.radarRadius += delta * 0.055)
@@ -140,16 +231,11 @@ export class BallCrushLoaderScene extends Phaser.Scene {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // LOADING UI  (called from preload — Phaser allows add.* in preload)
-  // ─────────────────────────────────────────────────────────────────────────
   private createLoadingUI() {
     this.cameras.main.setBackgroundColor('#05050f');
-
-    // ── Star field ──
     this.createStarField();
     this.scheduleShootingStars();
 
-    // ── Title ──
     this.add.text(180, 36, 'BALL CRUSH', {
       fontSize: '30px', color: '#ffaa00', fontStyle: 'bold',
       stroke: '#8b4513', strokeThickness: 5,
@@ -159,12 +245,10 @@ export class BallCrushLoaderScene extends Phaser.Scene {
       fontSize: '11px', color: '#ffaa00', letterSpacing: 5,
     }).setOrigin(0.5).setDepth(10);
 
-    // ── Divider ──
     const div = this.add.graphics().setDepth(10);
     div.lineStyle(1, 0xffaa00, 0.2);
     div.beginPath(); div.moveTo(20, 80); div.lineTo(340, 80); div.strokePath();
 
-    // ── Player card ──
     const card = this.add.graphics().setDepth(10);
     card.fillStyle(0x0d2b0d, 0.9);
     card.fillRoundedRect(60, 92, 240, 56, 12);
@@ -183,13 +267,9 @@ export class BallCrushLoaderScene extends Phaser.Scene {
       fontSize: '10px', color: '#ffaa00',
     }).setDepth(12);
 
-    // ── Central orb ──
     this.buildOrb();
-
-    // ── Radar ──
     this.radarGfx = this.add.graphics().setDepth(9);
 
-    // ── Progress bar ──
     const barY  = 430;
     const barBg = this.add.graphics().setDepth(10);
     barBg.fillStyle(0x111111, 1);
@@ -197,26 +277,21 @@ export class BallCrushLoaderScene extends Phaser.Scene {
     barBg.lineStyle(1, 0xffaa00, 0.25);
     barBg.strokeRoundedRect(30, barY, 300, 18, 9);
 
-    // Glow layer (drawn behind fill)
     this.progressBarGlow = this.add.graphics().setDepth(10);
     this.progressBarFill = this.add.graphics().setDepth(11);
 
-    // ── Percent text ──
     this.percentText = this.add.text(180, barY + 9, '0%', {
       fontSize: '11px', color: '#ffffff', fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(12);
 
-    // ── Loading label ──
     this.loadingText = this.add.text(180, barY + 28, 'Loading assets...', {
       fontSize: '12px', color: '#aaaaaa',
     }).setOrigin(0.5).setDepth(10);
 
-    // ── Status ──
-    this.statusText = this.add.text(180, barY + 46, 'Preparing game...', {
+    this.statusText = this.add.text(180, barY + 46, 'Connecting to server...', {
       fontSize: '11px', color: '#ffaa00',
     }).setOrigin(0.5).setDepth(10);
 
-    // ── Tip card ──
     const tipBg = this.add.graphics().setDepth(10);
     tipBg.fillStyle(0x000000, 0.5);
     tipBg.fillRoundedRect(30, 498, 300, 36, 9);
@@ -233,7 +308,6 @@ export class BallCrushLoaderScene extends Phaser.Scene {
       fontSize: '10px', color: '#888888',
     }).setOrigin(0.5).setDepth(11);
 
-    // ── Mini stats strip ──
     const statsY = 548;
     [
       ['🎮', 'MATCH', '1v1'],
@@ -246,7 +320,6 @@ export class BallCrushLoaderScene extends Phaser.Scene {
       statBg.fillRoundedRect(sx - 44, statsY - 14, 88, 44, 8);
       statBg.lineStyle(1, 0xffaa00, 0.2);
       statBg.strokeRoundedRect(sx - 44, statsY - 14, 88, 44, 8);
-
       this.add.text(sx, statsY - 2, `${icon} ${value}`, {
         fontSize: '13px', color: '#ffffff', fontStyle: 'bold',
       }).setOrigin(0.5).setDepth(11);
@@ -255,42 +328,25 @@ export class BallCrushLoaderScene extends Phaser.Scene {
       }).setOrigin(0.5).setDepth(11);
     });
 
-    // ── Footer ──
     this.add.text(180, 622, 'Ball Crush v1.0.0  ·  wintapgames.com', {
       fontSize: '9px', color: '#333333',
     }).setOrigin(0.5).setDepth(10);
   }
 
-  // ─── Central orb ──────────────────────────────────────────────────────────
   private buildOrb() {
     const cx = 180, cy = 285;
-
-    // Glow rings
     [95, 74, 55].forEach((r, i) => {
       this.add.circle(cx, cy, r, 0xffaa00, 0.025 + i * 0.015).setDepth(8);
     });
-
-    // Main orb layers
     this.orbGlow = this.add.circle(cx, cy, 40, 0xffaa00, 0.95).setDepth(10);
     this.add.circle(cx, cy, 26, 0xffd060, 0.75).setDepth(11);
     this.add.circle(cx, cy, 12, 0xffffff, 0.45).setDepth(12);
-
-    // Orb breathe
     this.tweens.add({
       targets: this.orbGlow, scaleX: 1.1, scaleY: 1.1,
       duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
     });
-
-    // ⚽ emoji in center
-    const icon = this.add.text(cx, cy, '⚽', {
-      fontSize: '26px',
-    }).setOrigin(0.5).setDepth(13);
-
-    this.tweens.add({
-      targets: icon, angle: 360, duration: 3000, repeat: -1, ease: 'Linear',
-    });
-
-    // Orbit balls
+    const icon = this.add.text(cx, cy, '⚽', { fontSize: '26px' }).setOrigin(0.5).setDepth(13);
+    this.tweens.add({ targets: icon, angle: 360, duration: 3000, repeat: -1, ease: 'Linear' });
     const colors = [0xffaa00, 0xff6600, 0xffcc44, 0xff8800, 0xffd080, 0xff9933];
     colors.forEach((col, i) => {
       const b = this.add.circle(cx, cy, i % 2 === 0 ? 4 : 3, col, 0.9).setDepth(10);
@@ -298,42 +354,25 @@ export class BallCrushLoaderScene extends Phaser.Scene {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // PROGRESS EVENTS
-  // ─────────────────────────────────────────────────────────────────────────
   private onProgress(value: number) {
     this.loadProgress = value;
     const pct = Math.round(value * 100);
-
-    // Progress bar fill
     const barY = 430, barW = 300;
     const fill = Math.max(barW * value, value > 0 ? 18 : 0);
-
     this.progressBarGlow.clear();
     this.progressBarGlow.fillStyle(0xffaa00, 0.15);
     this.progressBarGlow.fillRoundedRect(30, barY - 2, fill, 22, 9);
-
     this.progressBarFill.clear();
     this.progressBarFill.fillStyle(0xffaa00, 1);
     this.progressBarFill.fillRoundedRect(30, barY, fill, 18, 9);
-
     this.percentText?.setText(`${pct}%`);
-
-    // Status messages at milestones
     const msgs: Record<number, string> = {
-      10:  'Loading background...',
-      30:  'Loading ball assets...',
-      50:  'Loading player sprites...',
-      70:  'Loading UI assets...',
-      90:  'Almost ready...',
-      100: 'Ready to play!',
+      10: 'Loading background...', 30: 'Loading ball assets...',
+      50: 'Loading player sprites...', 70: 'Loading UI assets...',
+      90: 'Almost ready...', 100: 'Ready to play!',
     };
     const milestone = [10, 30, 50, 70, 90, 100].find(m => pct >= m);
-    if (milestone && msgs[milestone]) {
-      this.loadingText?.setText(msgs[milestone]);
-    }
-
-    // Show ball preview once texture is ready
+    if (milestone && msgs[milestone]) this.loadingText?.setText(msgs[milestone]);
     if (pct > 20 && !this.previewAdded && this.textures.exists('ball')) {
       this.previewAdded = true;
       this.addBallPreview();
@@ -341,42 +380,31 @@ export class BallCrushLoaderScene extends Phaser.Scene {
   }
 
   private addBallPreview() {
-    // Replace the ⚽ emoji with the actual ball texture if it's different
     if (this.textures.exists('ball')) {
-      this.ballPreview = this.add.image(180, 285, 'ball')
-        .setScale(0.18)
-        .setDepth(14);
-
-      this.tweens.add({
-        targets: this.ballPreview, angle: 360, duration: 2000, repeat: -1, ease: 'Linear',
-      });
+      this.ballPreview = this.add.image(180, 285, 'ball').setScale(0.18).setDepth(14);
+      this.tweens.add({ targets: this.ballPreview, angle: 360, duration: 2000, repeat: -1, ease: 'Linear' });
     }
   }
 
   private onComplete() {
     console.log('✅ All assets loaded');
     this.assetsLoaded = true;
-
     this.loadingText?.setText('Ready!');
     this.loadingText?.setColor('#00ff88');
-    this.statusText?.setText('Starting game...');
     this.percentText?.setText('100%');
-
-    // Fill bar fully green
     this.progressBarFill.clear();
     this.progressBarFill.fillStyle(0x00ff88, 1);
     this.progressBarFill.fillRoundedRect(30, 430, 300, 18, 9);
 
-    // Wait for minimum display time then go
-    const elapsed   = Date.now() - this.loadStartTime;
-    const remaining = Math.max(0, this.MIN_LOAD_TIME - elapsed);
-
-    this.time.delayedCall(remaining, () => this.goToStart());
+    if (this.serverOk) {
+      this.statusText?.setText('Server connected ✓');
+      this.tryProceed();
+    } else if (!this.serverChecked) {
+      this.statusText?.setText('Waiting for server...');
+    }
+    // If serverChecked && !serverOk — error overlay already showing
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // TRANSITION
-  // ─────────────────────────────────────────────────────────────────────────
   private goToStart() {
     console.log('🚀 → BallCrushStartScene');
     this.cameras.main.fadeOut(500, 0, 0, 0);
@@ -390,9 +418,6 @@ export class BallCrushLoaderScene extends Phaser.Scene {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // BACKGROUND
-  // ─────────────────────────────────────────────────────────────────────────
   private createStarField() {
     const defs = [
       { count: 80, radius: 1,   speedMin: 14, speedMax: 22, alphaMin: 0.18, alphaMax: 0.38, color: 0xaabbff },
@@ -451,7 +476,6 @@ export class BallCrushLoaderScene extends Phaser.Scene {
     });
   }
 
-  // ─── Cleanup ──────────────────────────────────────────────────────────────
   shutdown() {
     this.load.off('progress');
     this.load.off('complete');
