@@ -70,7 +70,7 @@ import './logger';
     } else {
         console.log(`🎮 No game in path, defaulting to: ${gameId}`);
     }
-    window.__LOGS__ = false
+    window.__LOGS__ = true;
     // Store game config
     window.gameConfig = {
         gameId: gameId,
