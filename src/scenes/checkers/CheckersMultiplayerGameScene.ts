@@ -1,10 +1,4 @@
 // src/scenes/checkers/CheckersMultiplayerGameScene.ts
-//
-// FIXES applied on top of the original:
-//   FIX A — Board desync: initializeGameState always sets up board locally.
-//            connectSocket requests boardSync after joining so server overrides with authoritative state.
-//   FIX B — Pieces not rendering: createPiece falls back to colored circles if texture missing.
-//   FIX C — Both players get the same initial board from server (server emits boardSync on 2nd join).
 
 import Phaser from 'phaser';
 import { io, Socket } from 'socket.io-client';
@@ -25,71 +19,104 @@ interface GameMove {
 }
 
 export class CheckersMultiplayerGameScene extends Phaser.Scene {
-    private uid: string = '';
+    private uid:      string = '';
     private username: string = '';
-    private lobbyId: string = '';
-    private myColor: 'red' | 'black' = 'red';
+    private lobbyId:  string = '';
+    private myColor:  'red' | 'black' = 'red';
     private opponent: CheckersPlayer | null = null;
     private userData: any = null;
 
     private socket!: Socket;
     private socketConnected: boolean = false;
 
-    private board: (string | null)[][] = [];
-    private currentPlayer: 'red' | 'black' = 'red';
-    private myTurn: boolean = false;
-    private gameActive: boolean = true;
-    private gameWinner: string | null = null;
+    private board:          (string | null)[][] = [];
+    private currentPlayer:  'red' | 'black' = 'red';
+    private myTurn:         boolean = false;
+    private gameActive:     boolean = true;
+    private gameWinner:     string | null = null;
     private moveInProgress: boolean = false;
 
-    private pingText!: Phaser.GameObjects.Text;
+    private pingText!:   Phaser.GameObjects.Text;
     private currentPing: number = 0;
     private pingHistory: number[] = [];
 
-    private squares: Phaser.GameObjects.Rectangle[][] = [];
-    private pieces: (Phaser.GameObjects.Image | Phaser.GameObjects.Arc | null)[][] = [];
+    private squares:       Phaser.GameObjects.Rectangle[][] = [];
+    private pieces:        (Phaser.GameObjects.Image | Phaser.GameObjects.Arc | null)[][] = [];
     private selectedPiece: { row: number; col: number } | null = null;
-    private validMoves: { row: number; col: number }[] = [];
+    private validMoves:    { row: number; col: number }[] = [];
 
-    private turnText!: Phaser.GameObjects.Text;
+    private turnText!:         Phaser.GameObjects.Text;
     private opponentNameText!: Phaser.GameObjects.Text;
-    private myNameText!: Phaser.GameObjects.Text;
-    private statusText!: Phaser.GameObjects.Text;
-    private resignButton!: Phaser.GameObjects.Text;
-    private winnerText!: Phaser.GameObjects.Text;
+    private myNameText!:       Phaser.GameObjects.Text;
+    private statusText!:       Phaser.GameObjects.Text;
+    private resignButton!:     Phaser.GameObjects.Text;
+    private winnerText!:       Phaser.GameObjects.Text;
 
-    private gameStartTime: number = 0;
-    private movesCount: number = 0;
+    private gameStartTime:       number = 0;
+    private movesCount:          number = 0;
     private piecesCapturedCount: number = 0;
-    private kingsMadeCount: number = 0;
+    private kingsMadeCount:      number = 0;
 
-    private readonly BOARD_SIZE = 8;
-    private readonly SQUARE_SIZE = 38;
+    private readonly BOARD_SIZE     = 8;
+    private readonly SQUARE_SIZE    = 38;
     private readonly BOARD_OFFSET_X = 28;
     private readonly BOARD_OFFSET_Y = 110;
     private gameFullyLoaded: boolean = false;
 
-    private inactivityTimer: number = 0;
-    private inactivityCountdown: number = 0;
-    private inactivityText!: Phaser.GameObjects.Text;
+    private inactivityTimer:          number = 0;
+    private inactivityCountdown:      number = 0;
+    private inactivityText!:          Phaser.GameObjects.Text;
     private readonly INACTIVITY_LIMIT = 15;
     private isInactivityWarningShown: boolean = false;
 
-    private logBuffer: { message: string; additionalData?: any; timestamp: number }[] = [];
+    private logBuffer:        { message: string; additionalData?: any; timestamp: number }[] = [];
     private logBatchInterval: number = 0;
-    private selectedGlow: Phaser.GameObjects.Graphics | null = null;
-    private isBoardFlipped: boolean = false;
+    private selectedGlow:     Phaser.GameObjects.Graphics | null = null;
+    private isBoardFlipped:   boolean = false;
+
+    private moveTimeouts: ReturnType<typeof setTimeout>[] = [];
 
     constructor() { super({ key: 'CheckersMultiplayerGameScene' }); }
+
+    // =========== INIT — reset ALL state so replays start clean ===========
 
     init(data: {
         username: string; uid: string; userData?: any;
         lobbyId: string; lobby?: any; playerColor?: 'red' | 'black';
     }) {
         this.username = data.username;
-        this.uid = data.uid;
+        this.uid      = data.uid;
         this.userData = data.userData || null;
-        this.lobbyId = data.lobbyId;
+        this.lobbyId  = data.lobbyId;
+
+        // Reset every piece of game state — Phaser reuses scene instances on replay
+        this.board           = [];
+        this.squares         = [];
+        this.pieces          = [];
+        this.selectedPiece   = null;
+        this.validMoves      = [];
+        this.currentPlayer   = 'red';
+        this.myTurn          = false;
+        this.gameActive      = true;
+        this.gameWinner      = null;
+        this.moveInProgress  = false;
+        this.gameFullyLoaded = false;
+        this.movesCount          = 0;
+        this.piecesCapturedCount = 0;
+        this.kingsMadeCount      = 0;
+        this.pingHistory     = [];
+        this.currentPing     = 0;
+        this.logBuffer       = [];
+        this.opponent        = null;
+        this.socketConnected = false;
+        this.selectedGlow    = null;
+        this.isInactivityWarningShown = false;
+        this.inactivityCountdown      = 0;
+        this.moveTimeouts    = [];
+
+        // Clear any lingering timers from a previous run
+        if (this.inactivityTimer) { clearInterval(this.inactivityTimer); this.inactivityTimer = 0; }
+        if (this.logBatchInterval) { clearInterval(this.logBatchInterval); this.logBatchInterval = 0; }
 
         if (data.playerColor) {
             this.myColor = data.playerColor;
@@ -100,6 +127,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.isBoardFlipped = (this.myColor === 'black');
     }
 
+    // =========== CREATE ===========
+
     async create() {
         this.cameras.main.setBackgroundColor('#2c3e50');
         this.initializeArrays();
@@ -107,23 +136,18 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.createUI();
 
         this.gameStartTime = Date.now();
-        this.movesCount = 0;
-        this.piecesCapturedCount = 0;
-        this.kingsMadeCount = 0;
-
         this.startLogBatching();
 
-        // FIX A: Always set up the board locally first so pieces render immediately.
-        // Server will send boardSync to override with authoritative state.
+        // Set up board locally first — server boardSync will override with authoritative state
         this.setupInitialBoard();
         this.currentPlayer = 'red';
-        this.myTurn = (this.myColor === 'red');
+        this.myTurn        = (this.myColor === 'red');
         this.renderAllPieces();
 
-        // Then load lobby for opponent info (non-blocking)
+        // Load opponent info (non-blocking)
         this.initializeGameState().catch(console.error);
 
-        // Connect socket — server will send boardSync after both players join
+        // Connect socket AFTER UI is ready
         this.connectSocket();
 
         await checkersMultiplayer.setPlayerOnline(this.uid, true);
@@ -134,12 +158,17 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.createConnectionQualityIndicator();
 
         setTimeout(() => { this.startInactivityTimer(); }, 2000);
-        setTimeout(() => { this.gameFullyLoaded = true; }, 8000);
     }
 
     // =========== SOCKET.IO ===========
 
     private connectSocket() {
+        // Fully destroy any previous socket before creating a new one
+        if (this.socket) {
+            this.socket.removeAllListeners();
+            this.socket.disconnect();
+        }
+
         this.socket = io(SERVER_URL, { transports: ['websocket'] });
 
         this.socket.on('connect', () => {
@@ -150,26 +179,38 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             });
         });
 
-        this.socket.on('ping_check', () => { this.socket.emit('pong_check'); });
+        // Single ping handler — updates both currentPing and pingText
+        this.socket.on('ping_check', () => {
+            const start = Date.now();
+            this.socket.emit('pong_check');
+            const ping = Date.now() - start;
+            this.pingHistory.push(ping);
+            if (this.pingHistory.length > 5) this.pingHistory.shift();
+            const avg = Math.round(this.pingHistory.reduce((a, b) => a + b, 0) / this.pingHistory.length);
+            this.currentPing = avg;
+            if (this.pingText) {
+                const color = avg > 500 ? '#ff0000' : avg > 300 ? '#ff6600' : avg > 150 ? '#ffff00' : '#00ff00';
+                this.pingText.setText(`Ping: ${avg} ms`).setColor(color);
+            }
+        });
 
-        // FIX C: Server sends boardSync to both players when 2nd player joins.
-        // This is the authoritative board — always apply it.
+        // Authoritative board from server — marks game as fully loaded
         this.socket.on('checkers:boardSync', (data: { board: (string | null)[][]; currentColor: 'red' | 'black' }) => {
             this.storeLog('🔄 Board sync from server');
-            this.board = data.board;
+            this.board         = data.board;
             this.currentPlayer = data.currentColor;
-            this.myTurn = (this.currentPlayer === this.myColor);
+            this.myTurn        = (this.currentPlayer === this.myColor);
+            this.gameFullyLoaded = true; // board confirmed — safe to handle disconnects now
             this.renderAllPieces();
             this.updateTurnDisplay();
         });
 
         this.socket.on('checkers:opponentMove', async (data: GameMove & { board?: (string | null)[][]; newCurrentColor?: 'red' | 'black' }) => {
-            // If server sends authoritative board, apply it directly and skip manual reconstruction
             if (data.board) {
                 this.board = data.board;
                 if (data.newCurrentColor) {
                     this.currentPlayer = data.newCurrentColor;
-                    this.myTurn = (this.currentPlayer === this.myColor);
+                    this.myTurn        = (this.currentPlayer === this.myColor);
                 }
                 this.renderAllPieces();
                 this.updateTurnDisplay();
@@ -182,25 +223,24 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         });
 
         this.socket.on('checkers:moveConfirmed', (data: { newCurrentColor: 'red' | 'black'; board?: (string | null)[][] }) => {
-            // FIX A: If server sends the board with confirmation, use it to prevent desync
+            this.clearMoveTimeouts();
             if (data.board) {
                 this.board = data.board;
                 this.renderAllPieces();
             }
-            this.currentPlayer = data.newCurrentColor;
-            this.myTurn = (this.currentPlayer === this.myColor);
-            this.updateTurnDisplay();
+            this.currentPlayer  = data.newCurrentColor;
+            this.myTurn         = (this.currentPlayer === this.myColor);
             this.moveInProgress = false;
+            this.updateTurnDisplay();
             this.resetInactivityTimer();
             setTimeout(() => this.checkWinCondition(), 100);
         });
 
         this.socket.on('checkers:moveRejected', (data: { reason?: string; board?: (string | null)[][] }) => {
+            this.clearMoveTimeouts();
             this.showStatusMessage('Move rejected!', 1500);
-            // Server can send correct board to resync
             if (data.board) {
                 this.board = data.board;
-                this.renderAllPieces();
             }
             this.moveInProgress = false;
             this.renderAllPieces();
@@ -213,7 +253,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             const won = data.winnerUid === this.uid;
             let msg = won ? 'YOU WIN!' : `${this.opponent?.displayName || 'Opponent'} WINS!`;
             if (data.reason === 'inactivity') msg = won ? 'YOU WIN! (Opponent timed out)' : "TIME'S UP! You lost due to inactivity";
-            if (data.reason === 'resign') msg = won ? 'YOU WIN! (Opponent resigned)' : 'You resigned';
+            if (data.reason === 'resign')     msg = won ? 'YOU WIN! (Opponent resigned)'  : 'You resigned';
             if (data.reason === 'disconnect') msg = won ? 'OPPONENT DISCONNECTED — YOU WIN!' : 'You disconnected';
             this.showGameOver(msg);
         });
@@ -225,23 +265,31 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             this.showGameOver('OPPONENT DISCONNECTED — YOU WIN!');
         });
 
-        this.socket.on('disconnect', () => { this.socketConnected = false; });
+        this.socket.on('disconnect', () => {
+            this.socketConnected = false;
+            // Unlock any stuck move so the player isn't frozen
+            if (this.moveInProgress) {
+                this.clearMoveTimeouts();
+                this.moveInProgress = false;
+                this.showStatusMessage('Connection lost — reconnecting...', 3000);
+            }
+        });
     }
 
     // =========== BOARD SETUP ===========
 
     private initializeArrays() {
-        this.board = Array(this.BOARD_SIZE).fill(null).map(() => Array(this.BOARD_SIZE).fill(null));
+        this.board   = Array(this.BOARD_SIZE).fill(null).map(() => Array(this.BOARD_SIZE).fill(null));
         this.squares = Array(this.BOARD_SIZE).fill(null).map(() => Array(this.BOARD_SIZE).fill(null));
-        this.pieces = Array(this.BOARD_SIZE).fill(null).map(() => Array(this.BOARD_SIZE).fill(null));
+        this.pieces  = Array(this.BOARD_SIZE).fill(null).map(() => Array(this.BOARD_SIZE).fill(null));
     }
 
     private createBoard() {
         for (let row = 0; row < this.BOARD_SIZE; row++) {
             for (let col = 0; col < this.BOARD_SIZE; col++) {
-                const actualRow = this.isBoardFlipped ? (this.BOARD_SIZE - 1 - row) : row;
-                const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE;
-                const y = this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE;
+                const actualRow  = this.isBoardFlipped ? (this.BOARD_SIZE - 1 - row) : row;
+                const x          = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE;
+                const y          = this.BOARD_OFFSET_Y + row * this.SQUARE_SIZE;
                 const isPlayable = (actualRow + col) % 2 === 1;
 
                 const square = this.add.rectangle(
@@ -252,7 +300,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 square.setStrokeStyle(1, 0x000000);
                 square.setInteractive({ useHandCursor: true });
                 (square as any).actualRow = actualRow;
-                (square as any).col = col;
+                (square as any).col       = col;
                 (square as any).visualRow = row;
                 square.on('pointerdown', () => {
                     this.onSquareClick((square as any).actualRow, (square as any).col, (square as any).visualRow);
@@ -267,7 +315,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             for (let col = 0; col < this.BOARD_SIZE; col++) {
                 this.board[row][col] = null;
                 if ((row + col) % 2 === 1) {
-                    if (row < 3) this.board[row][col] = 'black';
+                    if (row < 3)      this.board[row][col] = 'black';
                     else if (row > 4) this.board[row][col] = 'red';
                 }
             }
@@ -298,7 +346,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
     private startInactivityTimer() {
         if (this.inactivityTimer) clearInterval(this.inactivityTimer);
-        this.inactivityCountdown = this.INACTIVITY_LIMIT;
+        this.inactivityCountdown      = this.INACTIVITY_LIMIT;
         this.isInactivityWarningShown = false;
         this.inactivityText.setVisible(false);
 
@@ -307,7 +355,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 this.inactivityCountdown--;
                 if (this.inactivityCountdown <= 10) {
                     const color = this.inactivityCountdown <= 3 ? '#ff6600'
-                        : this.inactivityCountdown <= 5 ? '#ff0000' : '#ffaa00';
+                                : this.inactivityCountdown <= 5 ? '#ff0000' : '#ffaa00';
                     this.inactivityText.setText(`⏰ Move in: ${this.inactivityCountdown}s`).setColor(color).setVisible(true);
                 }
                 if (this.inactivityCountdown <= 0) {
@@ -323,7 +371,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
     private resetInactivityTimer() {
         if (this.inactivityTimer) { clearInterval(this.inactivityTimer); this.inactivityTimer = 0; }
-        this.inactivityCountdown = this.INACTIVITY_LIMIT;
+        this.inactivityCountdown      = this.INACTIVITY_LIMIT;
         this.isInactivityWarningShown = false;
         this.inactivityText.setVisible(false);
     }
@@ -353,8 +401,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             fontSize: '14px', color: '#888888',
         }).setOrigin(0.5);
 
-        this.turnText = this.add.text(180, 70, '', { fontSize: '20px', fontStyle: 'bold' }).setOrigin(0.5);
-        this.statusText = this.add.text(180, 100, '', { fontSize: '14px', color: '#ffff00' }).setOrigin(0.5);
+        this.turnText   = this.add.text(180, 70,  '', { fontSize: '20px', fontStyle: 'bold' }).setOrigin(0.5);
+        this.statusText = this.add.text(180, 100, '', { fontSize: '14px', color: '#ffff00'  }).setOrigin(0.5);
 
         this.resignButton = this.add.text(280, 30, '🏳️ RESIGN', {
             fontSize: '14px', color: '#ffffff', backgroundColor: '#f44336', padding: { x: 8, y: 4 },
@@ -376,14 +424,12 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
 
     private renderAllPieces() {
-        // Destroy all existing pieces
         for (let row = 0; row < this.BOARD_SIZE; row++) {
             for (let col = 0; col < this.BOARD_SIZE; col++) {
                 const p = this.pieces[row]?.[col];
                 if (p) { p.destroy(); this.pieces[row][col] = null; }
             }
         }
-
         for (let actualRow = 0; actualRow < this.BOARD_SIZE; actualRow++) {
             for (let col = 0; col < this.BOARD_SIZE; col++) {
                 const pieceType = this.board[actualRow]?.[col] ?? null;
@@ -394,11 +440,10 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         }
     }
 
-    // FIX B: Falls back to colored circles if texture is missing
     private createPiece(actualRow: number, visualRow: number, col: number, pieceType: string) {
-        const x = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
-        const y = this.BOARD_OFFSET_Y + visualRow * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
-        const isRed = pieceType.includes('red');
+        const x      = this.BOARD_OFFSET_X + col * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+        const y      = this.BOARD_OFFSET_Y + visualRow * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+        const isRed  = pieceType.includes('red');
         const isKing = pieceType.includes('king');
         const texture = isKing ? (isRed ? 'red_king' : 'black_king') : (isRed ? 'red_normal' : 'black_normal');
 
@@ -409,12 +454,9 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 .setDisplaySize(this.SQUARE_SIZE * 0.85, this.SQUARE_SIZE * 0.85)
                 .setDepth(1);
         } else {
-            // Fallback: draw colored circles so the board is always playable
             const color = isRed ? (isKing ? 0xff8800 : 0xcc2200) : (isKing ? 0x8888ff : 0x222222);
-            const circle = this.add.arc(x, y, this.SQUARE_SIZE * 0.38, 0, 360, false, color)
-                .setDepth(1);
+            const circle = this.add.arc(x, y, this.SQUARE_SIZE * 0.38, 0, 360, false, color).setDepth(1);
             if (isKing) {
-                // Draw a crown indicator
                 this.add.text(x, y, '♛', { fontSize: '12px', color: isRed ? '#fff' : '#ffd700' })
                     .setOrigin(0.5).setDepth(2);
             }
@@ -422,14 +464,14 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         }
 
         (piece as any).actualRow = actualRow;
-        (piece as any).col = col;
+        (piece as any).col       = col;
 
         const isMyPiece = (isRed && this.myColor === 'red') || (!isRed && this.myColor === 'black');
         if (this.gameActive && isMyPiece) {
             piece.setInteractive({ useHandCursor: true });
             piece.on('pointerdown', () => this.onPieceClick(actualRow, col));
-            piece.on('pointerover', () => { (piece as any).setAlpha?.(0.7); });
-            piece.on('pointerout', () => { (piece as any).setAlpha?.(1); });
+            piece.on('pointerover',  () => { (piece as any).setAlpha?.(0.7); });
+            piece.on('pointerout',   () => { (piece as any).setAlpha?.(1);   });
         }
 
         if (!this.pieces[actualRow]) this.pieces[actualRow] = Array(this.BOARD_SIZE).fill(null);
@@ -447,7 +489,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
         this.clearHighlights(); this.removeSelectedGlow();
         this.selectedPiece = { row: actualRow, col };
-        this.validMoves = this.getValidMoves(actualRow, col);
+        this.validMoves    = this.getValidMoves(actualRow, col);
         this.highlightValidMoves();
         this.addSelectedGlow(this.transformRowForDisplay(actualRow), col);
         this.showStatusMessage(
@@ -473,9 +515,8 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.movesCount++;
         this.resetInactivityTimer();
 
-        const piece = this.board[fromRow][fromCol]!;
+        const piece  = this.board[fromRow][fromCol]!;
         const isKing = piece.includes('king');
-        const isCapture = Math.abs(toRow - fromRow) > 1;
         let capturedPiece: { row: number; col: number } | null = null;
 
         if (Math.abs(toRow - fromRow) > 1 || (isKing && this.isFlyingKingCapture(fromRow, fromCol, toRow, toCol))) {
@@ -505,7 +546,9 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         // Optimistic local update
         await this.animateMove(fromRow, fromCol, toRow, toCol, capturedPiece, isKingPromotion);
 
-        this.board[toRow][toCol] = isKingPromotion ? `king_${piece}` : piece;
+        this.board[toRow][toCol]     = isKingPromotion
+            ? (piece.includes('red') ? 'king_red' : 'king_black')
+            : piece;
         this.board[fromRow][fromCol] = null;
         if (capturedPiece) this.board[capturedPiece.row][capturedPiece.col] = null;
 
@@ -513,19 +556,32 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         this.clearHighlights(); this.removeSelectedGlow();
 
         if (this.socketConnected) {
-            // Server will confirm or reject. On confirm it may send the authoritative board.
             this.socket.emit('checkers:makeMove', { roomId: this.lobbyId, move });
+
+            // Safety net: if server never responds, unlock after 5s
+            const t = setTimeout(() => {
+                if (this.moveInProgress) {
+                    this.moveInProgress = false;
+                    this.showStatusMessage('Move timed out — try again', 2000);
+                }
+            }, 5000);
+            this.moveTimeouts.push(t);
         } else {
-            // Offline fallback
+            // Offline fallback — flip turn locally
             this.moveInProgress = false;
-            this.currentPlayer = this.currentPlayer === 'red' ? 'black' : 'red';
-            this.myTurn = (this.currentPlayer === this.myColor);
+            this.currentPlayer  = this.currentPlayer === 'red' ? 'black' : 'red';
+            this.myTurn         = (this.currentPlayer === this.myColor);
             this.updateTurnDisplay();
         }
 
         await this.syncBoardToVisuals();
     }
-    // Add this helper method to the class:
+
+    private clearMoveTimeouts() {
+        this.moveTimeouts.forEach(t => clearTimeout(t));
+        this.moveTimeouts = [];
+    }
+
     private isFlyingKingCapture(fromRow: number, fromCol: number, toRow: number, toCol: number): boolean {
         const piece = this.board[fromRow][fromCol];
         if (!piece?.includes('king')) return false;
@@ -544,18 +600,19 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         }
         return foundOpponent;
     }
+
     private async applyOpponentMove(move: GameMove) {
         this.moveInProgress = true;
 
         const piece = this.board[move.fromRow][move.fromCol];
-        this.board[move.toRow][move.toCol] = piece;
+        this.board[move.toRow][move.toCol]     = piece;
         this.board[move.fromRow][move.fromCol] = null;
         if (move.capturedPiece) this.board[move.capturedPiece.row][move.capturedPiece.col] = null;
 
         let isKingPromotion = move.isKingPromotion || false;
         if (!isKingPromotion && move.piece) {
             if ((move.piece === 'red' && move.toRow === 0) || (move.piece === 'black' && move.toRow === 7)) {
-                this.board[move.toRow][move.toCol] = `king_${move.piece}`;
+                this.board[move.toRow][move.toCol] = move.piece.includes('red') ? 'king_red' : 'king_black';
                 isKingPromotion = true;
             }
         }
@@ -563,7 +620,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         await this.animateMove(move.fromRow, move.fromCol, move.toRow, move.toCol, move.capturedPiece ?? null, isKingPromotion);
 
         this.currentPlayer = this.currentPlayer === 'red' ? 'black' : 'red';
-        this.myTurn = (this.currentPlayer === this.myColor);
+        this.myTurn        = (this.currentPlayer === this.myColor);
         this.updateTurnDisplay();
 
         this.selectedPiece = null; this.validMoves = [];
@@ -582,9 +639,9 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             const piece = this.pieces[fromRow]?.[fromCol];
             if (!piece) { resolve(); return; }
 
-            const toVisualRow = this.transformRowForDisplay(toRow);
+            const toVisualRow   = this.transformRowForDisplay(toRow);
             const fromVisualRow = this.transformRowForDisplay(fromRow);
-            const targetX = this.BOARD_OFFSET_X + toCol * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+            const targetX = this.BOARD_OFFSET_X + toCol   * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
             const targetY = this.BOARD_OFFSET_Y + toVisualRow * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
 
             piece.setDepth(10);
@@ -593,7 +650,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                 targets: piece, x: targetX, y: targetY, duration: 200, ease: 'Power2',
                 onComplete: () => {
                     if (this.pieces[fromRow]) this.pieces[fromRow][fromCol] = null;
-                    if (!this.pieces[toRow]) this.pieces[toRow] = [];
+                    if (!this.pieces[toRow])  this.pieces[toRow] = [];
                     this.pieces[toRow][toCol] = piece;
                     piece.setDepth(1);
                     (piece as any).actualRow = toRow;
@@ -601,10 +658,11 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
                     if (capturedPiece) this.removePiece(capturedPiece.row, capturedPiece.col);
 
                     if (promoted && piece instanceof Phaser.GameObjects.Image) {
-                        const pt = this.board[toRow][toCol];
+                        const pt    = this.board[toRow][toCol];
                         const isRed = pt?.includes('red') ?? piece.texture.key.includes('red');
                         const kingTex = isRed ? 'red_king' : 'black_king';
-                        if (this.textures.exists(kingTex)) piece.setTexture(kingTex).setDisplaySize(this.SQUARE_SIZE * 0.85, this.SQUARE_SIZE * 0.85);
+                        if (this.textures.exists(kingTex))
+                            piece.setTexture(kingTex).setDisplaySize(this.SQUARE_SIZE * 0.85, this.SQUARE_SIZE * 0.85);
                         this.addPromotionEffect(toVisualRow, toCol);
                     }
 
@@ -617,32 +675,28 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
     // =========== GAME LOGIC ===========
 
-    // Replace getValidMoves entirely
     private getValidMoves(row: number, col: number): { row: number; col: number }[] {
-        const piece = this.board[row][col];
+        const piece  = this.board[row][col];
         if (!piece) return [];
         const isKing = piece.includes('king');
-        const isRed = piece.includes('red');
+        const isRed  = piece.includes('red');
 
-        // Check if any capture is available for this piece
         const captures = this.getCaptureMoves(row, col, isKing, isRed);
         if (captures.length > 0) return captures;
 
         const moves: { row: number; col: number }[] = [];
 
         if (isKing) {
-            // Flying king: slide any number of squares in all 4 diagonals
-            for (const [rd, cd] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+            for (const [rd, cd] of [[-1,-1],[-1,1],[1,-1],[1,1]]) {
                 let nr = row + rd, nc = col + cd;
                 while (nr >= 0 && nr < this.BOARD_SIZE && nc >= 0 && nc < this.BOARD_SIZE) {
-                    if (this.board[nr][nc]) break; // blocked by any piece
+                    if (this.board[nr][nc]) break;
                     moves.push({ row: nr, col: nc });
                     nr += rd; nc += cd;
                 }
             }
         } else {
-            // Regular: one square forward only
-            const dirs = isRed ? [[-1, -1], [-1, 1]] : [[1, -1], [1, 1]];
+            const dirs = isRed ? [[-1,-1],[-1,1]] : [[1,-1],[1,1]];
             for (const [rd, cd] of dirs) {
                 const nr = row + rd, nc = col + cd;
                 if (nr >= 0 && nr < this.BOARD_SIZE && nc >= 0 && nc < this.BOARD_SIZE && !this.board[nr][nc]) {
@@ -653,35 +707,29 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         return moves;
     }
 
-    private getCaptureMoves(
-        row: number, col: number, isKing: boolean, isRed: boolean
-    ): { row: number; col: number }[] {
+    private getCaptureMoves(row: number, col: number, isKing: boolean, isRed: boolean): { row: number; col: number }[] {
         const captures: { row: number; col: number }[] = [];
         const opponent = isRed ? 'black' : 'red';
 
-        for (const [rd, cd] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+        for (const [rd, cd] of [[-1,-1],[-1,1],[1,-1],[1,1]]) {
             if (isKing) {
-                // Scan along diagonal until blocked
                 let nr = row + rd, nc = col + cd;
                 let foundOpponent: { row: number; col: number } | null = null;
-
                 while (nr >= 0 && nr < this.BOARD_SIZE && nc >= 0 && nc < this.BOARD_SIZE) {
                     const p = this.board[nr][nc];
                     if (p) {
                         if (!foundOpponent && p.includes(opponent)) {
                             foundOpponent = { row: nr, col: nc };
                         } else {
-                            break; // own piece, or second piece after the opponent
+                            break;
                         }
                     } else if (foundOpponent) {
-                        // Empty square beyond the captured piece — valid landing square
                         captures.push({ row: nr, col: nc });
                     }
                     nr += rd; nc += cd;
                 }
             } else {
-                // Regular piece: jump exactly 2 squares
-                const midR = row + rd, midC = col + cd;
+                const midR = row + rd,     midC = col + cd;
                 const jmpR = row + rd * 2, jmpC = col + cd * 2;
                 if (jmpR < 0 || jmpR >= this.BOARD_SIZE || jmpC < 0 || jmpC >= this.BOARD_SIZE) continue;
                 const midP = this.board[midR]?.[midC];
@@ -699,13 +747,13 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         for (let r = 0; r < this.BOARD_SIZE; r++)
             for (let c = 0; c < this.BOARD_SIZE; c++) {
                 const p = this.board[r][c];
-                if (p?.includes('red')) red++;
+                if (p?.includes('red'))   red++;
                 if (p?.includes('black')) black++;
             }
 
         let winner: string | null = null;
-        if (red === 0) winner = this.myColor === 'black' ? this.uid : (this.opponent?.uid ?? null);
-        if (black === 0) winner = this.myColor === 'red' ? this.uid : (this.opponent?.uid ?? null);
+        if (red   === 0) winner = this.myColor === 'black' ? this.uid : (this.opponent?.uid ?? null);
+        if (black === 0) winner = this.myColor === 'red'   ? this.uid : (this.opponent?.uid ?? null);
 
         if (!winner) {
             let hasMoves = false;
@@ -736,10 +784,10 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     private async syncBoardToVisuals() {
         for (let r = 0; r < this.BOARD_SIZE; r++)
             for (let c = 0; c < this.BOARD_SIZE; c++) {
-                const onBoard = this.board[r][c];
+                const onBoard  = this.board[r][c];
                 const onScreen = this.pieces[r]?.[c];
-                if (onBoard && !onScreen) this.createPiece(r, this.transformRowForDisplay(r), c, onBoard);
-                else if (!onBoard && onScreen) { onScreen.destroy(); this.pieces[r][c] = null; }
+                if (onBoard && !onScreen)       this.createPiece(r, this.transformRowForDisplay(r), c, onBoard);
+                else if (!onBoard && onScreen)  { onScreen.destroy(); this.pieces[r][c] = null; }
             }
     }
 
@@ -763,22 +811,11 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
 
     // =========== PING ===========
 
+    // Just creates the text — socket listener is in connectSocket to avoid duplicates
     private createPingDisplay() {
         this.pingText = this.add.text(340, 10, 'Ping: --- ms', {
             fontSize: '10px', color: '#00ff00', backgroundColor: '#000000', padding: { x: 4, y: 2 },
         }).setOrigin(1, 0);
-
-        this.socket.on('ping_check', () => {
-            const start = Date.now();
-            this.socket.emit('pong_check');
-            const ping = Date.now() - start;
-            this.pingHistory.push(ping);
-            if (this.pingHistory.length > 5) this.pingHistory.shift();
-            const avg = Math.round(this.pingHistory.reduce((a, b) => a + b, 0) / this.pingHistory.length);
-            this.currentPing = avg;
-            const color = avg > 500 ? '#ff0000' : avg > 300 ? '#ff6600' : avg > 150 ? '#ffff00' : '#00ff00';
-            this.pingText.setText(`Ping: ${avg} ms`).setColor(color);
-        });
     }
 
     private createConnectionQualityIndicator() {
@@ -787,7 +824,9 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
             delay: 1000, loop: true,
             callback: () => {
                 if (!this.gameActive) return;
-                const c = this.currentPing > 500 ? 0xff0000 : this.currentPing > 300 ? 0xff6600 : this.currentPing > 150 ? 0xffff00 : 0x00ff00;
+                const c = this.currentPing > 500 ? 0xff0000
+                        : this.currentPing > 300 ? 0xff6600
+                        : this.currentPing > 150 ? 0xffff00 : 0x00ff00;
                 dot.setFillStyle(c);
             },
         });
@@ -827,11 +866,11 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     private removeSelectedGlow() { this.selectedGlow?.destroy(); this.selectedGlow = null; }
 
     private addMoveTrail(vfr: number, fc: number, vtr: number, tc: number) {
-        const sx = this.BOARD_OFFSET_X + fc * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+        const sx = this.BOARD_OFFSET_X + fc  * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
         const sy = this.BOARD_OFFSET_Y + vfr * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
-        const ex = this.BOARD_OFFSET_X + tc * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
+        const ex = this.BOARD_OFFSET_X + tc  * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
         const ey = this.BOARD_OFFSET_Y + vtr * this.SQUARE_SIZE + this.SQUARE_SIZE / 2;
-        const t = this.add.graphics().setDepth(2);
+        const t  = this.add.graphics().setDepth(2);
         t.lineStyle(4, 0xffd700, 0.8); t.lineBetween(sx, sy, ex, ey);
         this.tweens.add({ targets: t, alpha: 0, duration: 500, onComplete: () => t.destroy() });
     }
@@ -865,7 +904,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
         if (this.inactivityTimer) { clearInterval(this.inactivityTimer); this.inactivityTimer = 0; }
         this.inactivityText.setVisible(false);
         this.gameActive = false;
-        const playerWon = message.includes('YOU WIN');
+        const playerWon    = message.includes('YOU WIN');
         const winnerColor: 'red' | 'black' = playerWon ? this.myColor : (this.myColor === 'red' ? 'black' : 'red');
         this.scene.start('CheckersGameOverScene', {
             userData: this.userData, username: this.username, uid: this.uid,
@@ -888,6 +927,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
 
     private startLogBatching() {
+        if (this.logBatchInterval) { clearInterval(this.logBatchInterval); }
         this.logBatchInterval = window.setInterval(() => {
             if (this.logBuffer.length > 0) this.flushLogs();
         }, 10_000);
@@ -906,7 +946,7 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     }
 
     private async cleanupOldLogs() {
-        try { await api.cleanupLogs(this.lobbyId, this.uid, 1000); } catch { }
+        try { await api.cleanupLogs(this.lobbyId, this.uid, 1000); } catch {}
     }
 
     private flushLogsOnShutdown() {
@@ -917,9 +957,13 @@ export class CheckersMultiplayerGameScene extends Phaser.Scene {
     // =========== CLEANUP ===========
 
     private cleanup() {
+        this.clearMoveTimeouts();
         this.flushLogsOnShutdown();
         if (this.inactivityTimer) { clearInterval(this.inactivityTimer); this.inactivityTimer = 0; }
-        this.socket?.disconnect();
+        if (this.socket) {
+            this.socket.removeAllListeners();
+            this.socket.disconnect();
+        }
         checkersMultiplayer.setPlayerOnline(this.uid, false).catch(console.error);
         checkersMultiplayer.setPlayerGameStatus(this.uid, false).catch(console.error);
     }
