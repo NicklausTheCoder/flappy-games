@@ -39,7 +39,7 @@ const SERVER = {
   PADDLE_HALF_H:    10,   // paddle is 20px tall total
   BOTTOM_PADDLE_Y: 550,
   TOP_PADDLE_Y:     50,
-  BALL_RADIUS:      18,
+  BALL_RADIUS:      10,
 };
 
 interface GameState {
@@ -96,6 +96,9 @@ export class BallCrushGameScene extends Phaser.Scene {
   private cursors!:      Phaser.Types.Input.Keyboard.CursorKeys;
   private readonly moveSpeed: number = 6;
 
+  // ── Action buttons ────────────────────────────────────────────────────────
+  private actionButtons: Phaser.GameObjects.Container[] = [];
+
   // ── Layout — derived from server constants so they always match ───────────────
   //
   // The server flips ball.y = HEIGHT - ball.y for the top player so their
@@ -129,7 +132,8 @@ export class BallCrushGameScene extends Phaser.Scene {
     this.username = data.username || 'Player';
     this.uid      = data.uid      || '';
     this.roomId   = data.lobbyId;
-    this.myRole   = data.role     || 'bottom';
+    this.myRole        = data.role     || 'bottom';
+    this.actionButtons = [];
     console.log(`⚽ BallCrushGameScene | role=${this.myRole} | room=${this.roomId}`);
   }
 
@@ -170,6 +174,7 @@ export class BallCrushGameScene extends Phaser.Scene {
     this.createGameObjects();
     this.createUI();
     this.setupInput();
+    this.createActionButtons();
     this.connectSocket();
   }
 
@@ -345,7 +350,74 @@ export class BallCrushGameScene extends Phaser.Scene {
       this.lastSentPaddleX = newX;
     }
 
-   
+
+  }
+
+  // ─── Action buttons ──────────────────────────────────────────────────────────
+  // Tucked into the 70px strip below the my-paddle (Y=570–640).
+  // Three compact buttons: Resign  |  Offer Draw  |  Report
+  // Hidden until game is active; draw/resign disabled until gameActive.
+  private createActionButtons() {
+    const btnY    = 610;
+    const btnDefs = [
+      { x: 180,  label: '🏳', title: 'Resign',     color: 0x8b0000, action: () => this.resignGame()   },
+
+      { x: 306, label: '🚩', title: 'Report',      color: 0x4a0070, action: () => this.reportGame()   },
+    ];
+
+    btnDefs.forEach(def => {
+      const bg = this.add.rectangle(0, 0, 90, 26, def.color)
+        .setStrokeStyle(1, 0xffffff, 0.25);
+      const icon = this.add.text(-22, 0, def.label, { fontSize: '13px' }).setOrigin(0.5);
+      const lbl  = this.add.text(8, 0, def.title, {
+        fontSize: '11px', color: '#ffffff', fontStyle: 'bold',
+      }).setOrigin(0, 0.5);
+
+      const c = this.add.container(def.x, btnY, [bg, icon, lbl]);
+      c.setSize(90, 26).setInteractive({ useHandCursor: true }).setDepth(50).setAlpha(0.85);
+
+      c.on('pointerover',  () => { bg.setAlpha(0.7); c.setAlpha(1); });
+      c.on('pointerout',   () => { bg.setAlpha(1);   c.setAlpha(0.85); });
+      c.on('pointerdown',  () => { bg.setAlpha(0.4); });
+      c.on('pointerup',    () => { bg.setAlpha(1); def.action(); });
+
+      this.actionButtons.push(c);
+    });
+  }
+
+  private resignGame() {
+    if (!this.gameActive) return;
+    if (!confirm('Resign this game? This counts as a loss.')) return;
+    this.gameActive = false;
+    this.socket?.emit('resign', { roomId: this.roomId, uid: this.uid });
+    this.returnToMenu();
+  }
+
+  private offerDraw() {
+    if (!this.gameActive) return;
+    if (!confirm('Offer a draw to your opponent?')) return;
+    this.socket?.emit('offerDraw', { roomId: this.roomId, uid: this.uid });
+    this.showFloatingMsg('Draw offer sent!', '#66aaff');
+  }
+
+  private reportGame() {
+    const reason = prompt('Describe the issue (cheating, abuse, bug):');
+    if (!reason?.trim()) return;
+    this.socket?.emit('reportGame', {
+      roomId:      this.roomId,
+      reporterUid: this.uid,
+      reason:      reason.trim(),
+    });
+    this.showFloatingMsg('Report submitted ✓', '#aaffaa');
+  }
+
+  private showFloatingMsg(msg: string, color: string) {
+    const t = this.add.text(180, 575, msg, {
+      fontSize: '13px', color, stroke: '#000000', strokeThickness: 3,
+      backgroundColor: '#000000bb', padding: { x: 8, y: 4 },
+    }).setOrigin(0.5).setDepth(60);
+    this.tweens.add({ targets: t, y: 540, alpha: 0, duration: 2000, ease: 'Power2',
+      onComplete: () => t.destroy() });
   }
 
   // ─── Input ───────────────────────────────────────────────────────────────────
