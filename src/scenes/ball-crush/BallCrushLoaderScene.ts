@@ -18,6 +18,9 @@ export class BallCrushLoaderScene extends Phaser.Scene {
   private loadProgress: number = 0;
   private serverOk: boolean = false;
   private serverChecked: boolean = false;
+  private pingMs: number = 0;
+  private pingChecked: boolean = false;
+  private pingWarningShown: boolean = false;
 
   // ── Star field ───────────────────────────────────────────────────────
   private starLayers: Array<Array<{ obj: Phaser.GameObjects.Arc; speed: number }>> = [];
@@ -62,6 +65,9 @@ export class BallCrushLoaderScene extends Phaser.Scene {
     this.starLayers     = [];
     this.serverOk       = false;
     this.serverChecked  = false;
+    this.pingMs         = 0;
+    this.pingChecked    = false;
+    this.pingWarningShown = false;
 
     if (!data?.username) {
       console.error('❌ No username received!');
@@ -116,7 +122,8 @@ export class BallCrushLoaderScene extends Phaser.Scene {
         this.serverChecked = true;
         this.statusText?.setText('Server connected ✓');
         console.log('✅ Server reachable');
-        this.tryProceed();
+        // Run ping test before proceeding
+        this.runPingTest();
       } else {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -183,11 +190,189 @@ export class BallCrushLoaderScene extends Phaser.Scene {
 
   // ─── Try to proceed after both checks pass ───────────────────────────────
   private tryProceed() {
-    if (this.assetsLoaded && this.serverOk) {
+    if (this.assetsLoaded && this.serverOk && this.pingChecked) {
       const elapsed   = Date.now() - this.loadStartTime;
       const remaining = Math.max(0, this.MIN_LOAD_TIME - elapsed);
       this.time.delayedCall(remaining, () => this.goToStart());
     }
+  }
+
+  // ─── Ping test ───────────────────────────────────────────────────────────
+  // Opens a real WebSocket to the game server, fires 5 pings 200ms apart,
+  // measures round-trip, then decides whether to allow Ball Crush.
+  private async runPingTest() {
+    this.statusText?.setText('Testing connection quality...');
+
+    const PING_COUNT  = 5;
+    const PING_BUDGET = 3000; // ms total budget
+    const samples: number[] = [];
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const wsUrl = SERVER_BASE.replace(/^http/, 'ws') + '/socket.io/?EIO=4&transport=websocket';
+        const ws    = new WebSocket(wsUrl);
+        let   sent  = 0;
+        let   timer: ReturnType<typeof setTimeout>;
+
+        const timeout = setTimeout(() => {
+          ws.close();
+          reject(new Error('Ping timeout'));
+        }, PING_BUDGET);
+
+        ws.onopen = () => {
+          const send = () => {
+            if (sent >= PING_COUNT) return;
+            const t0 = Date.now();
+            sent++;
+            ws.send(`42["ping_check"]`);
+            // Record RTT when we get anything back (Socket.IO pong)
+            const handler = () => {
+              samples.push(Date.now() - t0);
+              if (samples.length >= PING_COUNT) {
+                clearTimeout(timeout);
+                ws.close();
+                resolve();
+              } else {
+                setTimeout(send, 200);
+              }
+              ws.removeEventListener('message', handler);
+            };
+            ws.addEventListener('message', handler);
+          };
+          // Small delay so socket.io handshake completes
+          setTimeout(send, 300);
+        };
+
+        ws.onerror = () => { clearTimeout(timeout); reject(new Error('WS error')); };
+        ws.onclose = () => { if (samples.length < PING_COUNT) resolve(); }; // partial results ok
+      });
+    } catch (e) {
+      console.warn('⚠️ Ping test failed:', e);
+      // Don't block — if ping test itself fails, let them through with a warning
+      this.pingMs      = 999;
+      this.pingChecked = true;
+      this.showPingWarning(999);
+      this.tryProceed();
+      return;
+    }
+
+    if (samples.length === 0) {
+      this.pingMs      = 999;
+      this.pingChecked = true;
+      this.showPingWarning(999);
+      this.tryProceed();
+      return;
+    }
+
+    // Drop best and worst, average the rest
+    samples.sort((a, b) => a - b);
+    const trimmed = samples.length > 2 ? samples.slice(1, -1) : samples;
+    this.pingMs   = Math.round(trimmed.reduce((a, b) => a + b, 0) / trimmed.length);
+
+    console.log(`📶 Ping test: ${samples.join(', ')}ms → avg=${this.pingMs}ms`);
+
+    this.pingChecked = true;
+
+    if (this.pingMs > 300) {
+      // Hard block — too laggy for real-time physics
+      this.showPingBlock(this.pingMs);
+      // Don't call tryProceed — user must choose
+    } else {
+      if (this.pingMs > 150) {
+        this.showPingWarning(this.pingMs);
+      } else {
+        this.statusText?.setText(`Connection: ${this.pingMs}ms ✓`);
+      }
+      this.tryProceed();
+    }
+  }
+
+  private showPingWarning(ping: number) {
+    if (this.pingWarningShown) return;
+    this.pingWarningShown = true;
+
+    const card = this.add.graphics().setDepth(60);
+    card.fillStyle(0x1a1000, 0.97);
+    card.fillRoundedRect(30, 480, 300, 64, 12);
+    card.lineStyle(2, 0xffaa00, 0.85);
+    card.strokeRoundedRect(30, 480, 300, 64, 12);
+
+    this.add.text(180, 499, `⚠️  Connection: ${ping}ms — may be unstable`, {
+      fontSize: '12px', color: '#ffaa00', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(61);
+    this.add.text(180, 520, 'Ball Crush needs a stable connection.Consider playing Checkers instead.', {
+      fontSize: '10px', color: '#cccccc', align: 'center',
+    }).setOrigin(0.5).setDepth(61);
+
+    // Auto-dismiss after 4s
+    this.time.delayedCall(4000, () => { card.destroy(); });
+  }
+
+  private showPingBlock(ping: number) {
+    // Dim
+    const dim = this.add.graphics().setDepth(70);
+    dim.fillStyle(0x000000, 0.85);
+    dim.fillRect(0, 0, 360, 640);
+
+    // Card
+    const card = this.add.graphics().setDepth(71);
+    card.fillStyle(0x100a00, 1);
+    card.fillRoundedRect(24, 180, 312, 280, 18);
+    card.lineStyle(2.5, 0xff6600, 0.9);
+    card.strokeRoundedRect(24, 180, 312, 280, 18);
+
+    this.add.text(180, 220, '📶', { fontSize: '42px' }).setOrigin(0.5).setDepth(72);
+    this.add.text(180, 268, 'HIGH PING DETECTED', {
+      fontSize: '17px', color: '#ff6600', fontStyle: 'bold',
+      stroke: '#000', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(72);
+    this.add.text(180, 296, `Your ping: ${ping}ms`, {
+      fontSize: '13px', color: '#ffffff',
+    }).setOrigin(0.5).setDepth(72);
+    this.add.text(180, 318, 'Ball Crush requires <300ms for fair real-time play. Your connection is too unstable right now.', {
+      fontSize: '11px', color: '#aaaaaa', align: 'center', lineSpacing: 4,
+    }).setOrigin(0.5).setDepth(72);
+
+    // ── Retry button ──
+    const retryBg = this.add.graphics().setDepth(72);
+    retryBg.fillStyle(0xffaa00, 1);
+    retryBg.fillRoundedRect(44, 365, 125, 40, 10);
+    this.add.text(106, 385, '🔄 Retry', {
+      fontSize: '13px', color: '#000000', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(73);
+    const retryZone = this.add.rectangle(106, 385, 125, 40, 0, 0)
+      .setInteractive({ useHandCursor: true }).setDepth(74);
+    retryZone.on('pointerdown', () => {
+      [dim, card, retryZone].forEach(o => o.destroy());
+      this.pingChecked      = false;
+      this.pingWarningShown = false;
+      this.statusText?.setText('Re-testing connection...');
+      this.runPingTest();
+    });
+
+    // ── Play Checkers button ──
+    const checkersBg = this.add.graphics().setDepth(72);
+    checkersBg.fillStyle(0x1565c0, 1);
+    checkersBg.fillRoundedRect(191, 365, 145, 40, 10);
+    this.add.text(263, 385, '♟ Play Checkers', {
+      fontSize: '12px', color: '#ffffff', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(73);
+    const checkersZone = this.add.rectangle(263, 385, 145, 40, 0, 0)
+      .setInteractive({ useHandCursor: true }).setDepth(74);
+    checkersZone.on('pointerdown', () => {
+      this.cameras.main.fadeOut(400, 0, 0, 0);
+      this.cameras.main.once('camerafadeoutcomplete', () => {
+        // Navigate to checkers — main.ts will route correctly
+        window.location.href = window.location.origin + '/checkers?user=' +
+          encodeURIComponent(new URLSearchParams(window.location.search).get('user') || '');
+      });
+    });
+
+    // Pulse retry button
+    this.tweens.add({
+      targets: retryBg, alpha: 0.75, duration: 700,
+      yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    });
   }
 
   // ─── create ───────────────────────────────────────────────────────────────

@@ -240,11 +240,25 @@ export class BallCrushGameScene extends Phaser.Scene {
         }
       }
 
-      // ── FIX BUG 2: fast opponent paddle lerp (0.6 vs old 0.3) ─────────────
+      // Snap opponent paddle directly to server position — the server is
+      // authoritative and lerp only adds visual lag that makes it look like
+      // the ball passed through air. Use a small lerp only for tiny movements
+      // (<8px) to avoid jitter; snap for anything larger.
       if (this.opponentPaddle) {
-        this.opponentPaddle.x = Phaser.Math.Linear(
-          this.opponentPaddle.x, state.paddles.opponent, 0.6
-        );
+        const diff = state.paddles.opponent - this.opponentPaddle.x;
+        if (Math.abs(diff) > 8) {
+          this.opponentPaddle.x = state.paddles.opponent; // snap
+        } else {
+          this.opponentPaddle.x += diff * 0.8; // smooth micro-movements
+        }
+      }
+
+      // Reconcile local paddle with server — if they diverge by >12px it means
+      // the server never received a paddle update in time. Snap to server value
+      // so the next hit check is based on where the server actually has us.
+      if (this.myPaddle && Math.abs(state.paddles.my - this.myPaddle.x) > 12) {
+        this.myPaddle.x      = state.paddles.my;
+        this.lastSentPaddleX = state.paddles.my;
       }
 
       if (this.stateCount <= 5 || this.stateCount % 120 === 0) {
@@ -345,12 +359,23 @@ export class BallCrushGameScene extends Phaser.Scene {
 
     this.myPaddle.x = newX;
 
-    if (Math.abs(newX - this.lastSentPaddleX) > 1) {
+    // Send paddle on ANY movement — the server needs current position
+    // to run accurate collision. Throttle by >0.5px to avoid spam on
+    // micro-jitter but send as fast as possible when actually moving.
+    if (Math.abs(newX - this.lastSentPaddleX) > 0.5) {
       this.socket?.emit('paddleMove', { x: newX });
       this.lastSentPaddleX = newX;
     }
 
-
+    if (this.debugText) {
+      this.debugText.setText(
+        `role:${this.myRole}\n` +
+        `ball:(${this.ball?.x.toFixed(0)},${this.ball?.y.toFixed(0)})\n` +
+        `target:(${this.targetBallX.toFixed(0)},${this.targetBallY.toFixed(0)})\n` +
+        `paddle:${this.myPaddle?.x.toFixed(0)}\n` +
+        `freeze:${this.lagFreezeActive}`
+      );
+    }
   }
 
   // ─── Action buttons ──────────────────────────────────────────────────────────
@@ -360,8 +385,8 @@ export class BallCrushGameScene extends Phaser.Scene {
   private createActionButtons() {
     const btnY    = 610;
     const btnDefs = [
-      { x: 180,  label: '🏳', title: 'Resign',     color: 0x8b0000, action: () => this.resignGame()   },
-
+      { x: 54,  label: '🏳', title: 'Resign',     color: 0x8b0000, action: () => this.resignGame()   },
+      { x: 180, label: '🤝', title: 'Draw',        color: 0x003580, action: () => this.offerDraw()    },
       { x: 306, label: '🚩', title: 'Report',      color: 0x4a0070, action: () => this.reportGame()   },
     ];
 
