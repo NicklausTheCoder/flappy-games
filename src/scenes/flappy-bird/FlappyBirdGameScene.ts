@@ -20,15 +20,28 @@ const IDLE_ANIM_RATE  = 6;      // fps   — slower wings while falling/gliding
 
 // Pipe config
 const PIPE_SPEED_BASE  = -155;   // px/s  base
-const PIPE_GAP_BASE    = 160;    // px    — tighter than 195 (harder)
-const PIPE_GAP_MIN     = 115;    // px    — minimum at high scores
-const PIPE_SPAWN_MS    = 1600;   // ms    — slightly longer window
+const PIPE_GAP_BASE    = 160;    // px    — vertical gap
+const PIPE_GAP_MIN     = 115;    // px    — minimum vertical gap at high scores
+const PIPE_H_GAP       = 230;    // px    — desired horizontal clear-air distance
+                                  //         between the RIGHT edge of one pipe pair
+                                  //         and the LEFT edge of the next.
+                                  //         Kept constant at all speeds so difficulty
+                                  //         scales from vertical gap, not frantic pace.
 const BIRD_SCALE       = 0.082;  // smaller bird (was 0.1)
 
 // Speed progression
 const SPEED_STEP       = 30;     // s between bumps
 const SPEED_INCREMENT  = 0.16;
 const SPEED_MAX        = 1.85;
+const PIPE_WIDTH       = 52;     // px — must match setDisplaySize in spawnPipePair
+
+// How many ms to wait before spawning the next pipe pair at a given speed multiplier.
+// Formula: time for pipe to travel (PIPE_WIDTH + PIPE_H_GAP) px at current speed.
+// This keeps the visual density of pipes constant regardless of speedMultiplier.
+function pipeSpawnMs(multiplier: number): number {
+  const speed = Math.abs(PIPE_SPEED_BASE) * multiplier; // px/s
+  return Math.round((PIPE_WIDTH + PIPE_H_GAP) / speed * 1000);
+}
 
 export class FlappyBirdGameScene extends Phaser.Scene {
   userData!: CompleteUserData;
@@ -272,16 +285,27 @@ export class FlappyBirdGameScene extends Phaser.Scene {
     this.tweens.killTweensOf(this.bird);
 
     this.physics.world.gravity.y = GRAVITY;
-    // Gentle first push — player should flap themselves into position
     this.bird.setVelocityY(-120);
 
+    // First pair after a fixed comfortable delay so player can orient
+    this.time.delayedCall(1200, () => {
+      if (!this.gameOver) {
+        this.spawnPipePair();
+        this.resetPipeInterval(); // start the rolling interval after first spawn
+      }
+    });
+  }
+
+  // Recreate the pipe interval using the CURRENT speed so horizontal
+  // density stays consistent. Called after every speed-up.
+  private resetPipeInterval() {
     if (this.pipeInterval) this.pipeInterval.destroy();
     this.pipeInterval = this.time.addEvent({
-      delay: PIPE_SPAWN_MS, loop: true,
-      callback: this.spawnPipePair, callbackScope: this,
+      delay: pipeSpawnMs(this.speedMultiplier),
+      loop:  true,
+      callback: this.spawnPipePair,
+      callbackScope: this,
     });
-    // First pair after a beat so player has a moment
-    this.time.delayedCall(800, () => { if (!this.gameOver) this.spawnPipePair(); });
   }
 
   // ─── update ────────────────────────────────────────────────────────────────
@@ -437,6 +461,8 @@ export class FlappyBirdGameScene extends Phaser.Scene {
       if (p.body) p.body.setVelocityX(vel);
     });
     this.clearSpeedTick();
+    // Restart the spawn interval at the new speed so horizontal gap stays constant
+    this.resetPipeInterval();
     this.cameras.main.flash(300, 255, 150, 0, 0.35);
 
     const label = this.add.text(180, 188, '⚡ SPEED UP!', {
