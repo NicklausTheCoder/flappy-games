@@ -139,16 +139,24 @@ export class BallCrushGameScene extends Phaser.Scene {
       this.socket.emit('pong_check');
     });
 
-    // pingWarning now carries RTT for everyone — use it to update ping indicator
+    // pingUpdate = good ping (only sent to this socket)
+    this.socket.on('pingUpdate', ({ rtt }: { rtt: number }) => {
+      this.pingHistory.push(rtt);
+      if (this.pingHistory.length > 5) this.pingHistory.shift();
+      this.avgPing = Math.round(this.pingHistory.reduce((a, b) => a + b, 0) / this.pingHistory.length);
+      this.updatePingIndicator();
+    });
+
+    // pingWarning = bad ping — broadcast to room so both players know
     this.socket.on('pingWarning', ({ socketId, rtt }: { socketId: string; rtt: number }) => {
       if (socketId === this.socket.id) {
         this.pingHistory.push(rtt);
         if (this.pingHistory.length > 5) this.pingHistory.shift();
         this.avgPing = Math.round(this.pingHistory.reduce((a, b) => a + b, 0) / this.pingHistory.length);
         this.updatePingIndicator();
-        if (rtt > 400) this.activateLagFreeze(rtt);
+        if (rtt > 500) this.activateLagFreeze(rtt);
       } else {
-        if (rtt > 400) this.showFloatingMsg(`⚠️ Opponent unstable (${rtt}ms)`, '#ffaa00', 3000);
+        if (rtt > 500) this.showFloatingMsg(`⚠️ Opponent unstable (${rtt}ms)`, '#ffaa00', 3000);
       }
     });
 
