@@ -62,9 +62,11 @@ export class BallCrushGameScene extends Phaser.Scene {
   private actionButtons: Phaser.GameObjects.Container[] = [];
 
   // In-game ping tracking
-  private pingHistory:    number[] = [];
-  private avgPing:        number   = 0;
-  private pingIndicator!: Phaser.GameObjects.Text;
+  private pingHistory:     number[] = [];
+  private avgPing:         number   = 0;
+  private pingIndicator!:  Phaser.GameObjects.Text;
+  private pingTriangle?:   Phaser.GameObjects.Container;
+  private wasDisconnected: boolean  = false;
 
   private myPaddleY:  number = SERVER.BOTTOM_PADDLE_Y;
   private oppPaddleY: number = SERVER.TOP_PADDLE_Y;
@@ -79,26 +81,27 @@ export class BallCrushGameScene extends Phaser.Scene {
   constructor() { super({ key: 'BallCrushGameScene' }); }
 
   init(data: { username: string; uid: string; lobbyId: string; role: 'bottom' | 'top' }) {
-    this.username      = data.username || 'Player';
-    this.uid           = data.uid      || '';
-    this.roomId        = data.lobbyId;
-    this.myRole        = data.role     || 'bottom';
-    this.actionButtons = [];
-    this.pingHistory   = [];
-    this.avgPing       = 0;
+    this.username        = data.username || 'Player';
+    this.uid             = data.uid      || '';
+    this.roomId          = data.lobbyId;
+    this.myRole          = data.role     || 'bottom';
+    this.actionButtons   = [];
+    this.pingHistory     = [];
+    this.avgPing         = 0;
+    this.wasDisconnected = false;
     console.log(`⚽ BallCrushGameScene | role=${this.myRole} | room=${this.roomId}`);
   }
 
   create() {
-    this.gameStartTime   = Date.now();
-    this.lastSentPaddleX = this.CENTER_X;
-    this.inputLocked     = true;
-    this.pointerActive   = false;
-    this.gameActive      = false;
-    this.stateCount      = 0;
-    this.frameCount      = 0;
-    this.lagFreezeActive = false;
-    this.myHealthBars    = [];
+    this.gameStartTime      = Date.now();
+    this.lastSentPaddleX    = this.CENTER_X;
+    this.inputLocked        = true;
+    this.pointerActive      = false;
+    this.gameActive         = false;
+    this.stateCount         = 0;
+    this.frameCount         = 0;
+    this.lagFreezeActive    = false;
+    this.myHealthBars       = [];
     this.opponentHealthBars = [];
 
     if (this.myRole === 'bottom') {
@@ -139,7 +142,7 @@ export class BallCrushGameScene extends Phaser.Scene {
       this.socket.emit('pong_check');
     });
 
-    // pingUpdate = good ping (only sent to this socket)
+    // Good ping — only sent to this socket
     this.socket.on('pingUpdate', ({ rtt }: { rtt: number }) => {
       this.pingHistory.push(rtt);
       if (this.pingHistory.length > 5) this.pingHistory.shift();
@@ -147,7 +150,7 @@ export class BallCrushGameScene extends Phaser.Scene {
       this.updatePingIndicator();
     });
 
-    // pingWarning = bad ping — broadcast to room so both players know
+    // Bad ping — broadcast to room so both players see warning
     this.socket.on('pingWarning', ({ socketId, rtt }: { socketId: string; rtt: number }) => {
       if (socketId === this.socket.id) {
         this.pingHistory.push(rtt);
@@ -169,12 +172,14 @@ export class BallCrushGameScene extends Phaser.Scene {
       this.gameActive  = false;
       this.inputLocked = true;
       this.clearLagFreeze();
+      this.hidePingTriangle();
       const overlay = this.add.graphics().setDepth(200);
       overlay.fillStyle(0x000000, 0.88);
       overlay.fillRect(0, 0, 360, 640);
       this.add.text(180, 260, '📶', { fontSize: '52px' }).setOrigin(0.5).setDepth(201);
       this.add.text(180, 320, 'DISCONNECTED', {
-        fontSize: '22px', color: '#ff4444', fontStyle: 'bold', stroke: '#000', strokeThickness: 3,
+        fontSize: '22px', color: '#ff4444', fontStyle: 'bold',
+        stroke: '#000', strokeThickness: 3,
       }).setOrigin(0.5).setDepth(201);
       this.add.text(180, 355, `High ping: ${data.rtt}ms`, {
         fontSize: '14px', color: '#ffaa00', stroke: '#000', strokeThickness: 2,
@@ -236,8 +241,7 @@ export class BallCrushGameScene extends Phaser.Scene {
         }
       }
 
-      // NOTE: do NOT reconcile myPaddle with server — client is the authority
-      // on its own paddle (client-side prediction). Server is always ~1 tick behind.
+      // NOTE: do NOT reconcile myPaddle — client is authority on own paddle
 
       if (this.stateCount <= 5 || this.stateCount % 120 === 0) {
         console.log(`[${this.myRole}] #${this.stateCount} ball=(${state.ball.x.toFixed(1)},${state.ball.y.toFixed(1)}) hp my=${state.health.my} opp=${state.health.opponent}`);
@@ -282,7 +286,8 @@ export class BallCrushGameScene extends Phaser.Scene {
     this.socket.on('speedBump', ({ multiplier }: { multiplier: number }) => {
       this.cameras.main.flash(500, 255, 255, 255, 0.3);
       const t = this.add.text(180, 200, `SPEED x${multiplier.toFixed(1)}!`, {
-        fontSize: '28px', color: '#ffffff', fontStyle: 'bold', stroke: '#ff0000', strokeThickness: 4,
+        fontSize: '28px', color: '#ffffff', fontStyle: 'bold',
+        stroke: '#ff0000', strokeThickness: 4,
       }).setOrigin(0.5);
       this.tweens.add({ targets: t, y: 150, alpha: 0, duration: 2000, ease: 'Power2', onComplete: () => t.destroy() });
     });
@@ -320,15 +325,38 @@ export class BallCrushGameScene extends Phaser.Scene {
       console.error(`[ERROR][${this.myRole}] ${message}`);
     });
 
-    this.socket.on('disconnect', () => {
-      if (this.gameActive) {
-        this.gameActive = false;
-        this.clearLagFreeze();
+    // Distinguish: did WE drop or did the server/opponent cause this?
+    this.socket.on('disconnect', (reason: string) => {
+      if (!this.gameActive) return;
+      this.gameActive = false;
+      this.clearLagFreeze();
+      this.hidePingTriangle();
+
+      const weDropped = ['transport close', 'transport error', 'ping timeout'].includes(reason);
+
+      if (weDropped) {
+        this.wasDisconnected = true;
+        const overlay = this.add.graphics().setDepth(200);
+        overlay.fillStyle(0x000000, 0.88);
+        overlay.fillRect(0, 0, 360, 640);
+        this.add.text(180, 240, '📶', { fontSize: '52px' }).setOrigin(0.5).setDepth(201);
+        this.add.text(180, 300, 'CONNECTION LOST', {
+          fontSize: '20px', color: '#ff4444', fontStyle: 'bold',
+          stroke: '#000', strokeThickness: 3,
+        }).setOrigin(0.5).setDepth(201);
+        this.add.text(180, 334, 'Your internet connection dropped.\nThe game has ended.', {
+          fontSize: '13px', color: '#cccccc', align: 'center', lineSpacing: 4,
+        }).setOrigin(0.5).setDepth(201);
+        this.add.text(180, 374, `(${reason})`, {
+          fontSize: '10px', color: '#555555',
+        }).setOrigin(0.5).setDepth(201);
+      } else {
         this.add.text(180, 320, 'Opponent disconnected!', {
           fontSize: '20px', color: '#ff4444', stroke: '#000', strokeThickness: 3,
         }).setOrigin(0.5);
-        this.time.delayedCall(3000, () => this.returnToMenu());
       }
+
+      this.time.delayedCall(3500, () => this.returnToMenu());
     });
   }
 
@@ -365,16 +393,18 @@ export class BallCrushGameScene extends Phaser.Scene {
   private createActionButtons() {
     const btnY    = 610;
     const btnDefs = [
-      { x: 54,  label: '🏳', title: 'Resign', color: 0x8b0000, action: () => this.resignGame()   },
-      { x: 180, label: '🤝', title: 'Draw',   color: 0x003580, action: () => this.offerDraw()    },
-      { x: 306, label: '🚩', title: 'Report', color: 0x4a0070, action: () => this.reportGame()   },
+      { x: 54,  label: '🏳', title: 'Resign', color: 0x8b0000, action: () => this.resignGame()  },
+      { x: 180, label: '🤝', title: 'Draw',   color: 0x003580, action: () => this.offerDraw()   },
+      { x: 306, label: '🚩', title: 'Report', color: 0x4a0070, action: () => this.reportGame()  },
     ];
 
     btnDefs.forEach(def => {
       const bg   = this.add.rectangle(0, 0, 90, 26, def.color).setStrokeStyle(1, 0xffffff, 0.25);
       const icon = this.add.text(-22, 0, def.label, { fontSize: '13px' }).setOrigin(0.5);
-      const lbl  = this.add.text(8, 0, def.title, { fontSize: '11px', color: '#ffffff', fontStyle: 'bold' }).setOrigin(0, 0.5);
-      const c    = this.add.container(def.x, btnY, [bg, icon, lbl]);
+      const lbl  = this.add.text(8, 0, def.title, {
+        fontSize: '11px', color: '#ffffff', fontStyle: 'bold',
+      }).setOrigin(0, 0.5);
+      const c = this.add.container(def.x, btnY, [bg, icon, lbl]);
       c.setSize(90, 26).setInteractive({ useHandCursor: true }).setDepth(50).setAlpha(0.85);
       c.on('pointerover',  () => { bg.setAlpha(0.7); c.setAlpha(1); });
       c.on('pointerout',   () => { bg.setAlpha(1);   c.setAlpha(0.85); });
@@ -402,7 +432,9 @@ export class BallCrushGameScene extends Phaser.Scene {
   private reportGame() {
     const reason = prompt('Describe the issue (cheating, abuse, bug):');
     if (!reason?.trim()) return;
-    this.socket?.emit('reportGame', { roomId: this.roomId, reporterUid: this.uid, reason: reason.trim() });
+    this.socket?.emit('reportGame', {
+      roomId: this.roomId, reporterUid: this.uid, reason: reason.trim(),
+    });
     this.showFloatingMsg('Report submitted ✓', '#aaffaa', 3000);
   }
 
@@ -411,7 +443,10 @@ export class BallCrushGameScene extends Phaser.Scene {
       fontSize: '13px', color, stroke: '#000000', strokeThickness: 3,
       backgroundColor: '#000000bb', padding: { x: 8, y: 4 },
     }).setOrigin(0.5).setDepth(60);
-    this.tweens.add({ targets: t, y: 530, alpha: 0, duration, ease: 'Power2', onComplete: () => t.destroy() });
+    this.tweens.add({
+      targets: t, y: 530, alpha: 0, duration, ease: 'Power2',
+      onComplete: () => t.destroy(),
+    });
   }
 
   // ─── Input ────────────────────────────────────────────────────────────────────
@@ -436,20 +471,26 @@ export class BallCrushGameScene extends Phaser.Scene {
     const PW = SERVER.PADDLE_HALF_W * 2;
     const PH = SERVER.PADDLE_HALF_H * 2;
 
-    this.myPaddle = this.add.rectangle(this.CENTER_X, this.myPaddleY, PW, PH, 0x00cc44).setDepth(10);
+    this.myPaddle = this.add.rectangle(
+      this.CENTER_X, this.myPaddleY, PW, PH, 0x00cc44
+    ).setDepth(10);
 
     this.add.text(180, this.myPaddleY + 16, 'YOU', {
       fontSize: '12px', color: '#ffffff', stroke: '#000000', strokeThickness: 2,
     }).setOrigin(0.5);
 
-    this.opponentPaddle = this.add.rectangle(this.CENTER_X, this.oppPaddleY, PW, PH, 0xff4444).setDepth(10).setVisible(false);
+    this.opponentPaddle = this.add.rectangle(
+      this.CENTER_X, this.oppPaddleY, PW, PH, 0xff4444
+    ).setDepth(10).setVisible(false);
 
     const oppLabelY = this.oppPaddleY < 320 ? this.oppPaddleY - 16 : this.oppPaddleY + 16;
     this.add.text(180, oppLabelY, 'OPPONENT', {
       fontSize: '12px', color: '#ff8888', stroke: '#000000', strokeThickness: 2,
     }).setOrigin(0.5).setName('opponentLabel');
 
-    this.ball = this.add.arc(this.CENTER_X, 320, SERVER.BALL_RADIUS, 0, 360, false, 0xffaa00).setDepth(5);
+    this.ball = this.add.arc(
+      this.CENTER_X, 320, SERVER.BALL_RADIUS, 0, 360, false, 0xffaa00
+    ).setDepth(5);
     this.ball.setStrokeStyle(2, 0xffffff, 0.3);
   }
 
@@ -460,22 +501,29 @@ export class BallCrushGameScene extends Phaser.Scene {
     const oppHpY = this.oppPaddleY + (this.oppPaddleY < 320 ? -22 :  22);
 
     for (let i = 0; i < 5; i++) {
-      this.myHealthBars.push(this.add.rectangle(20 + i * 24, myHpY,  18, 12, 0x00ff44));
-      this.opponentHealthBars.push(this.add.rectangle(20 + i * 24, oppHpY, 18, 12, 0xff4444));
+      this.myHealthBars.push(
+        this.add.rectangle(20 + i * 24, myHpY, 18, 12, 0x00ff44)
+      );
+      this.opponentHealthBars.push(
+        this.add.rectangle(20 + i * 24, oppHpY, 18, 12, 0xff4444)
+      );
     }
 
     this.scoreText = this.add.text(180, 308, 'Score: 0', {
-      fontSize: '22px', color: '#ffffff', fontStyle: 'bold', stroke: '#000000', strokeThickness: 4,
+      fontSize: '22px', color: '#ffffff', fontStyle: 'bold',
+      stroke: '#000000', strokeThickness: 4,
     }).setOrigin(0.5);
 
     const hintY = this.myPaddleY + (this.myPaddleY > 320 ? -28 : 28);
-    this.add.text(180, hintY, 'Drag or ← → to move', { fontSize: '11px', color: '#888888' }).setOrigin(0.5);
+    this.add.text(180, hintY, 'Drag or use arrow keys', {
+      fontSize: '11px', color: '#888888',
+    }).setOrigin(0.5);
 
     this.waitingText = this.add.text(180, 320, 'Connecting...', {
       fontSize: '20px', color: '#ffffff', stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5);
 
-    // Ping indicator — top right, always visible
+    // Top-right ping dot — always visible
     this.pingIndicator = this.add.text(354, 4, '●', {
       fontSize: '11px', color: '#00ff88', stroke: '#000000', strokeThickness: 2,
     }).setOrigin(1, 0).setDepth(100);
@@ -486,20 +534,29 @@ export class BallCrushGameScene extends Phaser.Scene {
   private syncHealthBars(myHealth: number, oppHealth: number) {
     while (this.myHealthBars.length > myHealth) {
       const bar = this.myHealthBars.pop();
-      if (bar) this.tweens.add({ targets: bar, alpha: 0, scaleX: 0.2, duration: 200, onComplete: () => bar.destroy() });
+      if (bar) this.tweens.add({
+        targets: bar, alpha: 0, scaleX: 0.2, duration: 200,
+        onComplete: () => bar.destroy(),
+      });
     }
     while (this.opponentHealthBars.length > oppHealth) {
       const bar = this.opponentHealthBars.pop();
-      if (bar) this.tweens.add({ targets: bar, alpha: 0, scaleX: 0.2, duration: 200, onComplete: () => bar.destroy() });
+      if (bar) this.tweens.add({
+        targets: bar, alpha: 0, scaleX: 0.2, duration: 200,
+        onComplete: () => bar.destroy(),
+      });
     }
   }
 
   private showHitEffect(x: number, y: number) {
     const c = this.add.circle(x, y, 22, 0xffff00, 0.8);
-    this.tweens.add({ targets: c, scale: 1.8, alpha: 0, duration: 150, onComplete: () => c.destroy() });
+    this.tweens.add({
+      targets: c, scale: 1.8, alpha: 0, duration: 150,
+      onComplete: () => c.destroy(),
+    });
   }
 
-  // ─── Ping indicator ───────────────────────────────────────────────────────────
+  // ─── Ping indicator + triangle ────────────────────────────────────────────────
 
   private updatePingIndicator() {
     if (!this.pingIndicator) return;
@@ -507,6 +564,62 @@ export class BallCrushGameScene extends Phaser.Scene {
     const color = p > 400 ? '#ff2222' : p > 300 ? '#ff6600' : p > 150 ? '#ffdd00' : '#00ff88';
     const label = p > 150 ? `${p}ms` : '●';
     this.pingIndicator.setText(label).setColor(color);
+
+    // Mid-screen warning triangle when ping is really bad
+    if (p > 300) {
+      this.showPingTriangle(p);
+    } else {
+      this.hidePingTriangle();
+    }
+  }
+
+  private showPingTriangle(ping: number) {
+    // Update label if already showing
+    if (this.pingTriangle?.active) {
+      const ms = this.pingTriangle.getAt(2) as Phaser.GameObjects.Text;
+      if (ms) ms.setText(`${ping}ms`);
+      return;
+    }
+
+    // Semi-transparent triangle centred above mid-field — won't block paddles
+    const cx = 180, cy = 285;
+
+    const g = this.add.graphics();
+    g.fillStyle(0xff6600, 0.3);
+    g.fillTriangle(cx, cy - 30, cx - 26, cy + 16, cx + 26, cy + 16);
+    g.lineStyle(2, 0xff8800, 0.55);
+    g.strokeTriangle(cx, cy - 30, cx - 26, cy + 16, cx + 26, cy + 16);
+
+    const exclaim = this.add.text(cx, cy - 4, '!', {
+      fontSize: '22px', color: '#ffcc00', fontStyle: 'bold',
+    }).setOrigin(0.5).setAlpha(0.7);
+
+    const ms = this.add.text(cx, cy + 28, `${ping}ms`, {
+      fontSize: '11px', color: '#ffaa44',
+    }).setOrigin(0.5).setAlpha(0.65);
+
+    this.pingTriangle = this.add.container(0, 0, [g, exclaim, ms]).setDepth(30);
+
+    // Slow pulse — noticeable but not distracting
+    this.tweens.add({
+      targets: this.pingTriangle,
+      alpha: 0.5,
+      duration: 1400,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    });
+  }
+
+  private hidePingTriangle() {
+    if (!this.pingTriangle?.active) return;
+    this.tweens.killTweensOf(this.pingTriangle);
+    const tri = this.pingTriangle;
+    this.pingTriangle = undefined;
+    this.tweens.add({
+      targets: tri, alpha: 0, duration: 400,
+      onComplete: () => tri.destroy(),
+    });
   }
 
   // ─── Lag freeze ───────────────────────────────────────────────────────────────
@@ -525,7 +638,9 @@ export class BallCrushGameScene extends Phaser.Scene {
       fontSize: '16px', color: '#ffaa00', fontStyle: 'bold',
       stroke: '#000000', strokeThickness: 3, align: 'center',
     }).setOrigin(0.5).setDepth(151);
-    this.tweens.add({ targets: this.lagText, alpha: 0.4, duration: 400, yoyo: true, repeat: -1 });
+    this.tweens.add({
+      targets: this.lagText, alpha: 0.4, duration: 400, yoyo: true, repeat: -1,
+    });
 
     this.lagFreezeTimer = this.time.delayedCall(dur, () => this.clearLagFreeze());
   }
@@ -537,13 +652,17 @@ export class BallCrushGameScene extends Phaser.Scene {
     this.inputLocked = false;
     if (this.lagFreezeTimer) { this.lagFreezeTimer.destroy(); this.lagFreezeTimer = undefined; }
     if (this.lagOverlay) {
-      this.tweens.add({ targets: this.lagOverlay, alpha: 0, duration: 300,
-        onComplete: () => { this.lagOverlay?.destroy(); this.lagOverlay = undefined; } });
+      this.tweens.add({
+        targets: this.lagOverlay, alpha: 0, duration: 300,
+        onComplete: () => { this.lagOverlay?.destroy(); this.lagOverlay = undefined; },
+      });
     }
     if (this.lagText) {
       this.tweens.killTweensOf(this.lagText);
-      this.tweens.add({ targets: this.lagText, alpha: 0, duration: 300,
-        onComplete: () => { this.lagText?.destroy(); this.lagText = undefined; } });
+      this.tweens.add({
+        targets: this.lagText, alpha: 0, duration: 300,
+        onComplete: () => { this.lagText?.destroy(); this.lagText = undefined; },
+      });
     }
   }
 
@@ -553,6 +672,7 @@ export class BallCrushGameScene extends Phaser.Scene {
     this.gameActive  = false;
     this.inputLocked = true;
     this.clearLagFreeze();
+    this.hidePingTriangle();
     const duration = Math.floor((Date.now() - this.gameStartTime) / 1000);
     this.socket?.disconnect();
     this.scene.start('BallCrushGameOverScene', {
@@ -564,7 +684,9 @@ export class BallCrushGameScene extends Phaser.Scene {
 
   private returnToMenu() {
     this.socket?.disconnect();
-    this.scene.start('BallCrushStartScene', { username: this.username, uid: this.uid });
+    this.scene.start('BallCrushStartScene', {
+      username: this.username, uid: this.uid,
+    });
   }
 
   // ─── Background ───────────────────────────────────────────────────────────────
@@ -578,7 +700,10 @@ export class BallCrushGameScene extends Phaser.Scene {
       const x = Phaser.Math.Between(50, 310);
       const y = Phaser.Math.Between(100, 540);
       const c = this.add.circle(x, y, 10, 0xffaa00, 0.05);
-      this.tweens.add({ targets: c, y: y + 20, alpha: 0.1, duration: 3000 + i * 500, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+      this.tweens.add({
+        targets: c, y: y + 20, alpha: 0.1,
+        duration: 3000 + i * 500, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      });
     }
   }
 
@@ -586,6 +711,7 @@ export class BallCrushGameScene extends Phaser.Scene {
 
   shutdown() {
     this.clearLagFreeze();
+    this.hidePingTriangle();
     if (this.pingWarningTimer) this.pingWarningTimer.destroy();
     this.socket?.disconnect();
   }
